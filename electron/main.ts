@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme } from "electron";
+import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
 import path from "node:path";
 
 import type {
@@ -9,6 +9,7 @@ import type {
   DownloadRequest,
   SidecarEvent,
   StartDownloadResponse,
+  SystemNoticePayload,
   ThemeEventEnvelope,
   ThemeRecord,
   ThemeSummary
@@ -16,6 +17,7 @@ import type {
 import { ensurePortableLayout, getRuntimePaths } from "./app-paths";
 import { registerDismasProtocol, toThemeAssetUrl } from "./protocol";
 import { SidecarClient } from "./sidecar-client";
+import { RuntimeToolInstaller } from "./tool-installer";
 
 const runtimePaths = getRuntimePaths();
 
@@ -38,10 +40,10 @@ function normalizeEventTheme(theme: ThemeRecord | ThemeSummary): ThemeSummary {
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 1180,
-    minHeight: 760,
+    width: 1360,
+    height: 880,
+    minWidth: 980,
+    minHeight: 700,
     titleBarStyle: "hiddenInset",
     backgroundColor: "#120f0d",
     webPreferences: {
@@ -96,6 +98,13 @@ function themeAppliedEnvelope(record: ThemeRecord): ThemeEventEnvelope {
   };
 }
 
+function systemNoticeEnvelope(payload: SystemNoticePayload): SidecarEvent {
+  return {
+    event: "system.notice",
+    payload
+  };
+}
+
 function toIpcError(error: unknown): Error {
   const fallback: AppRpcError = {
     code: "UNKNOWN",
@@ -119,6 +128,9 @@ async function bootstrap(): Promise<void> {
   registerDismasProtocol(runtimePaths);
 
   const sidecar = new SidecarClient(runtimePaths, forwardSidecarEvent);
+  const installer = new RuntimeToolInstaller(runtimePaths, (payload) => {
+    forwardSidecarEvent(systemNoticeEnvelope(payload));
+  });
 
   const invokeSidecar = async <T>(method: string, params?: unknown): Promise<T> => {
     try {
@@ -138,6 +150,22 @@ async function bootstrap(): Promise<void> {
     invokeSidecar<{ cancelled: boolean; id: string }>("download.cancel", { id })
   );
   ipcMain.handle("system:status", async () => sidecar.getSystemStatus());
+  ipcMain.handle("system:repairTools", async () => {
+    try {
+      await installer.ensureCoreTools();
+      return await sidecar.getSystemStatus();
+    } catch (error) {
+      throw toIpcError({
+        code: "IO_ERROR",
+        message: error instanceof Error ? error.message : "Failed to repair portable runtime tools.",
+        recoverable: true
+      } satisfies AppRpcError);
+    }
+  });
+  ipcMain.handle("system:openExternal", async (_event, url: string) => {
+    await shell.openExternal(url);
+    return { opened: true };
+  });
 
   ipcMain.handle("theme:list", async () => {
     const records = await invokeSidecar<ThemeRecord[]>("theme.list");

@@ -45,6 +45,7 @@ const state = {
   currentView: "downloader" as ViewName,
   activeTheme: null as ThemeSummary | null,
   systemStatus: null as SystemStatus | null,
+  repairInFlight: false,
   themes: [] as ThemeSummary[],
   analyzeResult: null as AnalyzeResult | null,
   tasks: new Map<string, TaskSnapshot>(),
@@ -325,6 +326,9 @@ function renderShell(): void {
           <p class="eyebrow">System Health</p>
           <h2 id="system-summary">Scanning portable layout</h2>
           <p id="system-mode-copy">Checking sidecar mode, binaries, themes, and portable notices.</p>
+          <div class="system-actions">
+            <button id="repair-tools-button" class="accent-button" type="button">Repair Missing Tools</button>
+          </div>
           <div id="system-capabilities" class="capability-list empty-inline">Capabilities pending.</div>
           <div id="system-components" class="component-list empty-inline">No diagnostics yet.</div>
         </section>
@@ -544,8 +548,9 @@ function renderSystemStatus(): void {
   const capabilityList = document.querySelector<HTMLDivElement>("#system-capabilities");
   const componentList = document.querySelector<HTMLDivElement>("#system-components");
   const statusStrip = document.querySelector<HTMLDivElement>("#status-strip");
+  const repairButton = document.querySelector<HTMLButtonElement>("#repair-tools-button");
 
-  if (!summary || !modeCopy || !capabilityList || !componentList || !statusStrip) {
+  if (!summary || !modeCopy || !capabilityList || !componentList || !statusStrip || !repairButton) {
     return;
   }
 
@@ -554,6 +559,8 @@ function renderSystemStatus(): void {
   if (!status) {
     summary.textContent = "Scanning portable layout";
     modeCopy.textContent = "Checking sidecar mode, binaries, themes, and portable notices.";
+    repairButton.disabled = true;
+    repairButton.textContent = "Repair Missing Tools";
     capabilityList.className = "capability-list empty-inline";
     capabilityList.textContent = "Capabilities pending.";
     componentList.className = "component-list empty-inline";
@@ -564,6 +571,14 @@ function renderSystemStatus(): void {
   const readyCount = status.components.filter((entry) => entry.availability === "ready").length;
   const blockerCount = status.components.filter((entry) => entry.availability === "missing").length;
   const warningCount = status.components.filter((entry) => entry.availability === "warning" || entry.availability === "fallback").length;
+  const autoRepairTargets = status.components.filter((entry) => entry.autoInstall && entry.availability === "missing");
+
+  repairButton.disabled = state.repairInFlight || autoRepairTargets.length === 0;
+  repairButton.textContent = state.repairInFlight
+    ? "Repairing Tools..."
+    : autoRepairTargets.length > 0
+      ? `Repair Missing Tools (${autoRepairTargets.length})`
+      : "Repair Missing Tools";
 
   summary.textContent =
     blockerCount === 0 ? `Operational posture ${readyCount}/${status.components.length}` : `${blockerCount} blocker${blockerCount === 1 ? "" : "s"} detected`;
@@ -599,6 +614,18 @@ function renderSystemStatus(): void {
           </div>
           <p>${escapeHtml(component.summary)}</p>
           <p class="component-help">${escapeHtml(component.help[0] ?? "No recovery hint recorded.")}</p>
+          <div class="component-links">
+            ${
+              component.sourceUrl
+                ? `<button class="ghost-button source-link-button" type="button" data-source-url="${escapeHtml(component.sourceUrl)}">Open Source</button>`
+                : ""
+            }
+            ${
+              component.path
+                ? `<span class="component-path">${escapeHtml(component.path)}</span>`
+                : ""
+            }
+          </div>
         </article>
       `
     )
@@ -610,6 +637,22 @@ function renderSystemStatus(): void {
     <span class="status-pill">Mode: ${escapeHtml(status.sidecarMode)}</span>
     <span class="status-pill">${escapeHtml(blockerCount === 0 ? "No hard blockers" : `${blockerCount} blocker${blockerCount === 1 ? "" : "s"}`)}</span>
   `;
+
+  componentList.querySelectorAll<HTMLButtonElement>("[data-source-url]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const url = button.dataset.sourceUrl;
+      if (!url) {
+        return;
+      }
+
+      try {
+        await window.appApi.openExternal(url);
+        appendLog(`Opened source URL: ${url}`, "info");
+      } catch (error) {
+        presentError(parseInvokeError(error));
+      }
+    });
+  });
 }
 
 function renderAnalyzeResult(): void {
@@ -841,6 +884,17 @@ function bindNavigation(): void {
   });
 }
 
+function bindSystemActions(): void {
+  const repairButton = document.querySelector<HTMLButtonElement>("#repair-tools-button");
+  if (!repairButton) {
+    return;
+  }
+
+  repairButton.addEventListener("click", async () => {
+    await ensureRuntimeTools("manual");
+  });
+}
+
 function bindAnalyzeForm(): void {
   const form = document.querySelector<HTMLFormElement>("#analyze-form");
   if (!form) {
@@ -984,6 +1038,17 @@ function bindThemeForms(): void {
 }
 
 function handleDownloadEvent(event: DownloadEventEnvelope): void {
+  if (event.event === "system.notice") {
+    appendLog(`${event.payload.title}: ${event.payload.message}`, event.payload.tone);
+    pushNotice(event.payload.title, event.payload.message, event.payload.tone, event.payload.steps ?? []);
+
+    if (event.payload.refreshStatus) {
+      void refreshSystemStatus(false);
+    }
+
+    return;
+  }
+
   if (event.event === "system.error") {
     presentError(event.payload.error);
     void refreshSystemStatus(false);
@@ -1086,6 +1151,43 @@ async function loadThemes(): Promise<void> {
   renderThemes();
 }
 
+function shouldAutoRepair(status: SystemStatus | null): boolean {
+  if (!status) {
+    return false;
+  }
+
+  return status.components.some((component) => component.autoInstall && component.availability === "missing");
+}
+
+async function ensureRuntimeTools(mode: "auto" | "manual"): Promise<void> {
+  if (state.repairInFlight) {
+    return;
+  }
+
+  state.repairInFlight = true;
+  renderSystemStatus();
+
+  if (mode === "auto") {
+    pushNotice(
+      "Automatic Runtime Repair",
+      "The app detected missing portable tools and started downloading the configured direct binaries.",
+      "info"
+    );
+  }
+
+  try {
+    state.systemStatus = await window.appApi.repairRuntimeTools();
+    renderSystemStatus();
+    appendLog("Portable tool repair finished.", "success");
+  } catch (error) {
+    presentError(parseInvokeError(error));
+  } finally {
+    state.repairInFlight = false;
+    renderSystemStatus();
+    await refreshSystemStatus(false);
+  }
+}
+
 async function refreshSystemStatus(pushRecoveredNotice = true): Promise<void> {
   try {
     state.systemStatus = await window.appApi.getSystemStatus();
@@ -1110,6 +1212,7 @@ async function refreshSystemStatus(pushRecoveredNotice = true): Promise<void> {
 async function bootstrap(): Promise<void> {
   renderShell();
   bindNavigation();
+  bindSystemActions();
   bindAnalyzeForm();
   bindDownloadForm();
   bindThemeForms();
@@ -1125,6 +1228,10 @@ async function bootstrap(): Promise<void> {
   window.appApi.subscribeThemeEvents(handleThemeEvent);
 
   await refreshSystemStatus();
+
+  if (shouldAutoRepair(state.systemStatus)) {
+    void ensureRuntimeTools("auto");
+  }
 
   try {
     await loadThemes();

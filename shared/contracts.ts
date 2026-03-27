@@ -24,6 +24,8 @@ export interface SystemComponentStatus {
   availability: ComponentAvailability;
   summary: string;
   path?: string | null;
+  sourceUrl?: string | null;
+  autoInstall?: boolean;
   requiredFor: string[];
   help: string[];
 }
@@ -170,6 +172,16 @@ export interface SystemErrorPayload {
   error: AppRpcError;
 }
 
+export type SystemNoticeTone = "info" | "success" | "warning" | "danger";
+
+export interface SystemNoticePayload {
+  title: string;
+  message: string;
+  tone: SystemNoticeTone;
+  steps?: string[];
+  refreshStatus?: boolean;
+}
+
 export type DownloadEventEnvelope =
   | { event: "download.queued"; payload: DownloadQueuedPayload }
   | { event: "download.started"; payload: DownloadStartedPayload }
@@ -177,6 +189,7 @@ export type DownloadEventEnvelope =
   | { event: "download.completed"; payload: DownloadCompletedPayload }
   | { event: "download.failed"; payload: DownloadFailedPayload }
   | { event: "download.cancelled"; payload: DownloadCancelledPayload }
+  | { event: "system.notice"; payload: SystemNoticePayload }
   | { event: "system.error"; payload: SystemErrorPayload };
 
 export type ThemeEventEnvelope = { event: "theme.applied"; payload: ThemeAppliedPayload };
@@ -216,6 +229,8 @@ export interface AppApi {
   startDownload(payload: DownloadRequest): Promise<StartDownloadResponse>;
   cancelDownload(id: string): Promise<{ cancelled: boolean; id: string }>;
   getSystemStatus(): Promise<SystemStatus>;
+  repairRuntimeTools(): Promise<SystemStatus>;
+  openExternal(url: string): Promise<{ opened: boolean }>;
   getThemes(): Promise<ThemeSummary[]>;
   applyTheme(id: string): Promise<ThemeSummary>;
   importTheme(filePath: string): Promise<ThemeSummary>;
