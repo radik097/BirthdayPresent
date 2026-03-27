@@ -1,0 +1,9 @@
+# Исключить все временные и сгенерированные файлы
+*.log
+*.tmp
+*.cache
+node_modules/
+dist/
+build/
+.env
+.DS_Store

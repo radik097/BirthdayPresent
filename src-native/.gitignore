@@ -1,0 +1,5 @@
+# Исключить артефакты сборки Rust
+/target/
+Cargo.lock
+*.rs.bk
+*.log
