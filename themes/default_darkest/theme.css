@@ -1,0 +1,80 @@
+:root {
+  --frame-texture: url("./img/frame.svg");
+  --button-texture: url("./img/button.svg");
+  --panel-texture: url("./img/panel.svg");
+  --wallpaper-texture: url("./img/wallpaper.svg");
+}
+
+body::before {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.03), transparent 42%),
+    radial-gradient(circle at 18% 12%, rgba(255, 208, 127, 0.08), transparent 24%),
+    var(--wallpaper-texture);
+  background-size: auto, auto, cover;
+  background-position: center;
+  opacity: 0.18;
+}
+
+.panel,
+.sidebar-card,
+.theme-card,
+.queue-item,
+.log-entry,
+.nav-button {
+  background-image: var(--panel-texture);
+  background-size: cover;
+  background-position: center;
+}
+
+.sidebar::after,
+.workspace::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border: 1px solid rgba(230, 201, 155, 0.06);
+  pointer-events: none;
+}
+
+.accent-button,
+.ghost-button,
+.danger-button,
+.nav-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.accent-button::before,
+.ghost-button::before,
+.danger-button::before,
+.nav-button::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--button-texture);
+  background-size: cover;
+  mix-blend-mode: screen;
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.panel {
+  position: relative;
+}
+
+.panel::after {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 14px;
+  border: 1px solid rgba(219, 192, 146, 0.08);
+  background: var(--frame-texture);
+  background-size: cover;
+  mix-blend-mode: overlay;
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+.stress-fill {
+  box-shadow: 0 0 18px rgba(170, 36, 36, 0.32);
+}
+

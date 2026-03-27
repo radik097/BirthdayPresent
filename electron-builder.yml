@@ -1,0 +1,35 @@
+appId: com.rodion.dismasdownloader
+productName: Dismas Downloader
+artifactName: ${productName}-${version}-${arch}.${ext}
+asar: true
+directories:
+  output: release
+files:
+  - dist/**
+  - dist-electron/**
+  - package.json
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+extraFiles:
+  - from: themes
+    to: themes
+    filter:
+      - "**/*"
+  - from: libs
+    to: libs
+    filter:
+      - "**/*"
+  - from: data
+    to: data
+    filter:
+      - "**/*"
+  - from: licenses
+    to: licenses
+    filter:
+      - "**/*"
+

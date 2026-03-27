@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "default_darkest",
+  "name": "Darkest Steel",
+  "version": "1.0.0",
+  "author": "Built-in",
+  "description": "A heavy rust-and-ember skin for the starter shell.",
+  "targetAppVersion": ">=0.1.0",
+  "entryCss": "theme.css",
+  "previewImage": "img/preview.svg",
+  "fonts": [],
+  "variables": {
+    "--bg": "#16110f",
+    "--bg-elevated": "#241a17",
+    "--panel": "#312720",
+    "--panel-strong": "#3d2d24",
+    "--panel-edge": "rgba(206, 173, 119, 0.28)",
+    "--text": "#d9cbb6",
+    "--muted": "#a59682",
+    "--accent": "#8a0303",
+    "--accent-soft": "rgba(138, 3, 3, 0.24)",
+    "--success": "#5b7b4a",
+    "--warning": "#b58b46",
+    "--danger": "#b12020"
+  },
+  "assets": {
+    "frameTexture": "img/frame.svg",
+    "buttonTexture": "img/button.svg",
+    "panelTexture": "img/panel.svg",
+    "wallpaper": "img/wallpaper.svg"
+  },
+  "modes": ["dark"],
+  "supportsCustomWallpaper": true
+}
+

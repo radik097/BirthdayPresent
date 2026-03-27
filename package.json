@@ -1,0 +1,43 @@
+{
+  "name": "dismas-downloader",
+  "version": "0.1.0",
+  "description": "Portable Electron + Rust starter kit for a themed media downloader shell.",
+  "main": "dist-electron/main.js",
+  "author": "Rodion",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "clean": "rimraf dist dist-electron",
+    "check:rust": "cargo check --manifest-path src-native/Cargo.toml",
+    "build:rust": "node scripts/build-rust-sidecar.mjs",
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:main": "tsup --watch --silent",
+    "dev:electron": "wait-on tcp:127.0.0.1:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electronmon dist-electron/main.js",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run clean && vite build && tsup --silent",
+    "dist": "npm run build:rust && npm run build && electron-builder --config electron-builder.yml",
+    "app:dir": "npm run build:rust && npm run build && electron-builder --dir --config electron-builder.yml",
+    "app:dist": "npm run dist"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.0.12",
+    "electronmon": "^2.0.2",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "extends": null
+  }
+}

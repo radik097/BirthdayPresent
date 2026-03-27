@@ -1,0 +1,8 @@
+<svg width="800" height="600" viewBox="0 0 800 600" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="800" height="600" fill="#2B211C"/>
+  <g opacity="0.22">
+    <path d="M0 76C170 18 318 22 470 52C586 74 690 64 800 36V0H0V76Z" fill="#5B4538"/>
+    <path d="M0 600H800V520C642 476 510 474 354 508C228 536 124 538 0 514V600Z" fill="#120E0C"/>
+  </g>
+</svg>
+
