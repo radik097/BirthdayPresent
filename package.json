@@ -19,7 +19,8 @@
     "build": "npm run clean && vite build && tsup --silent",
     "dist": "npm run build:rust && npm run build && electron-builder --config electron-builder.yml",
     "app:dir": "npm run build:rust && npm run build && electron-builder --dir --config electron-builder.yml",
-    "app:dist": "npm run dist"
+    "app:dist": "npm run dist",
+    "build:card": "vite build --outDir dist-card --emptyOutDir"
   },
   "dependencies": {
     "adm-zip": "^0.5.16"
