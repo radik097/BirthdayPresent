@@ -4,6 +4,7 @@ import type {
   AnalyzeResult,
   AppRpcError,
   DownloadEventEnvelope,
+  LibraryEntry,
   DownloadRequest,
   NetworkSettings,
   SystemComponentStatus,
@@ -11,6 +12,7 @@ import type {
   ThemeEventEnvelope,
   ThemeSummary
 } from "../../shared/contracts";
+import { detectLocale, LOCALE_STORAGE_KEY, t as translate, type UiLocale } from "./i18n";
 import { applyThemeStyles } from "./theme";
 
 type ViewName = "downloader" | "queue" | "themes";
@@ -43,11 +45,14 @@ interface NoticeEntry {
 
 const state = {
   currentView: "downloader" as ViewName,
+  locale: detectLocale() as UiLocale,
   activeTheme: null as ThemeSummary | null,
   systemStatus: null as SystemStatus | null,
   repairInFlight: false,
+  defaultOutputDir: "",
   themes: [] as ThemeSummary[],
   analyzeResult: null as AnalyzeResult | null,
+  library: [] as LibraryEntry[],
   tasks: new Map<string, TaskSnapshot>(),
   logs: [] as LogEntry[],
   notices: [] as NoticeEntry[]
@@ -78,7 +83,11 @@ function parseInvokeError(error: unknown): AppRpcError {
     return { code: "UNKNOWN", message };
   }
 
-  return { code: "UNKNOWN", message: "Unknown renderer error." };
+  return { code: "UNKNOWN", message: t("error.unknownRenderer") };
+}
+
+function t(key: Parameters<typeof translate>[1], vars?: Record<string, string | number>): string {
+  return translate(state.locale, key, vars);
 }
 
 function appendLog(message: string, tone: LogTone = "info"): void {
@@ -89,7 +98,7 @@ function appendLog(message: string, tone: LogTone = "info"): void {
     message
   });
 
-  state.logs = state.logs.slice(0, 80);
+  state.logs = state.logs.slice(0, 40);
   renderLogFeed();
 }
 
@@ -110,7 +119,7 @@ function pushNotice(title: string, message: string, tone: LogTone = "info", step
   }
 
   state.notices.unshift(notice);
-  state.notices = state.notices.slice(0, 6);
+  state.notices = state.notices.slice(0, 3);
   renderNotices();
 }
 
@@ -120,67 +129,60 @@ function describeError(error: AppRpcError): { title: string; message: string; to
 
   if (error.code === "BINARY_MISSING") {
     return {
-      title: "Missing Binary",
+      title: t("error.missingBinaryTitle"),
       message: error.message,
       tone: "warning",
       steps:
         helpFromDetails.length > 0
           ? helpFromDetails
-          : ["Put the missing executable into libs/.", "Run the system check again after copying the file."]
+          : [t("error.missingBinaryHelp1"), t("error.missingBinaryHelp2")]
     };
   }
 
   if (error.code === "SIDECAR_UNAVAILABLE") {
     return {
-      title: "Download Engine Offline",
+      title: t("error.engineOfflineTitle"),
       message: error.message,
       tone: "warning",
-      steps: [
-        "The app can fall back to its embedded JS backend when possible.",
-        "If you want the native path, build downloader-core.exe and place it in libs/."
-      ]
+      steps: [t("error.engineOfflineHelp1"), t("error.engineOfflineHelp2")]
     };
   }
 
   if (details.category === "ANTI_BOT") {
     return {
-      title: "Provider Anti-Bot Challenge",
+      title: t("error.antiBotTitle"),
       message: error.message,
       tone: "warning",
       steps:
         helpFromDetails.length > 0
           ? helpFromDetails
-          : ["Try cookies from browser.", "Try impersonation.", "Try a different network path."]
+          : [t("error.antiBotHelp1"), t("error.antiBotHelp2"), t("error.antiBotHelp3")]
     };
   }
 
   if (details.category === "NETWORK") {
     return {
-      title: "Network Transport Problem",
+      title: t("error.networkTitle"),
       message: error.message,
       tone: "warning",
       steps:
         helpFromDetails.length > 0
           ? helpFromDetails
-          : [
-              "Check the proxy URL.",
-              "Switch back to Direct mode to isolate the failure.",
-              "If you use System DPI bypass, verify that the external tool is already configured."
-            ]
+          : [t("error.networkHelp1"), t("error.networkHelp2"), t("error.networkHelp3")]
     };
   }
 
   if (error.code === "THEME_ERROR") {
     return {
-      title: "Theme Problem",
+      title: t("error.themeTitle"),
       message: error.message,
       tone: "warning",
-      steps: ["Check manifest.json and entryCss.", "Avoid ../ in theme asset paths."]
+      steps: [t("error.themeHelp1"), t("error.themeHelp2")]
     };
   }
 
   return {
-    title: "System Message",
+    title: t("error.systemTitle"),
     message: error.message,
     tone: error.code === "VALIDATION_ERROR" ? "warning" : "danger",
     steps: helpFromDetails
@@ -191,18 +193,15 @@ function appendDiagnosticHints(error: AppRpcError): void {
   const message = error.message.toLowerCase();
 
   if (message.includes("not a bot") || message.includes("sign in")) {
-    appendLog(
-      "This looks like a server-side anti-bot barrier. Try cookies, impersonation, or a different network path.",
-      "warning"
-    );
+    appendLog(t("hint.antiBot"), "warning");
   }
 
   if (message.includes("proxy") || message.includes("timed out") || message.includes("connection")) {
-    appendLog("Network transport may be the real cause here. Check proxy settings or fall back to direct mode.", "warning");
+    appendLog(t("hint.network"), "warning");
   }
 
   if (message.includes("deno.exe")) {
-    appendLog("YouTube support expects a JavaScript runtime sidecar. Place Deno in libs/ before testing those flows.", "warning");
+    appendLog(t("hint.deno"), "warning");
   }
 }
 
@@ -227,18 +226,18 @@ function availabilityTone(availability: SystemComponentStatus["availability"]): 
 
 function availabilityLabel(availability: SystemComponentStatus["availability"]): string {
   if (availability === "ready") {
-    return "Ready";
+    return t("availability.ready");
   }
 
   if (availability === "fallback") {
-    return "Fallback";
+    return t("availability.fallback");
   }
 
   if (availability === "warning") {
-    return "Attention";
+    return t("availability.warning");
   }
 
-  return "Missing";
+  return t("availability.missing");
 }
 
 function statusText(task: TaskSnapshot): string {
@@ -247,18 +246,157 @@ function statusText(task: TaskSnapshot): string {
   }
 
   if (task.status === "completed") {
-    return "Recovered";
+    return t("task.completed");
   }
 
   if (task.status === "failed") {
-    return "Broken";
+    return t("task.failed");
   }
 
   if (task.status === "cancelled") {
-    return "Withdrawn";
+    return t("task.cancelled");
+  }
+
+  if (task.status === "queued" || task.status === "started") {
+    return t("download.awaiting");
   }
 
   return task.status;
+}
+
+function formatDuration(seconds: number | null): string {
+  if (!seconds || !Number.isFinite(seconds)) {
+    return t("downloader.durationUnknown");
+  }
+
+  const totalSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainingSeconds).padStart(2, "0")}`;
+  }
+
+  return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+function formatAbsoluteDate(value: string | null | undefined): string {
+  if (!value) {
+    return t("library.unknownDate");
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleDateString(state.locale === "ru" ? "ru-RU" : "en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  });
+}
+
+function presetLabel(preset?: string): string {
+  if (preset === "mp3") {
+    return t("download.mp3");
+  }
+
+  return t("download.best");
+}
+
+type PreviewPlayer =
+  | { kind: "youtube"; src: string; label: string }
+  | { kind: "video"; src: string; label: string }
+  | { kind: "poster"; label: string };
+
+const DIRECT_VIDEO_PATTERN = /\.(mp4|webm|ogg|ogv|mov|m4v)(?:$|[?#])/i;
+
+function isDirectVideoUrl(url: string | null | undefined): url is string {
+  return typeof url === "string" && DIRECT_VIDEO_PATTERN.test(url);
+}
+
+function extractYouTubeVideoId(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl) {
+    return null;
+  }
+
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+    if (host === "youtu.be") {
+      return url.pathname.split("/").filter(Boolean)[0] ?? null;
+    }
+
+    if (host.endsWith("youtube.com")) {
+      const watchId = url.searchParams.get("v");
+      if (watchId) {
+        return watchId;
+      }
+
+      const segments = url.pathname.split("/").filter(Boolean);
+      if (segments[0] === "embed" || segments[0] === "shorts" || segments[0] === "live") {
+        return segments[1] ?? null;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function buildPreviewPlayer(result: AnalyzeResult): PreviewPlayer {
+  const youtubeId = extractYouTubeVideoId(result.webpageUrl) ?? extractYouTubeVideoId(result.url);
+
+  if (youtubeId) {
+    return {
+      kind: "youtube",
+      src: `https://www.youtube.com/embed/${encodeURIComponent(youtubeId)}?autoplay=0&rel=0&modestbranding=1&playsinline=1`,
+      label: t("player.youtube")
+    };
+  }
+
+  if (isDirectVideoUrl(result.url)) {
+    return {
+      kind: "video",
+      src: result.url,
+      label: t("player.video")
+    };
+  }
+
+  if (isDirectVideoUrl(result.webpageUrl)) {
+    return {
+      kind: "video",
+      src: result.webpageUrl,
+      label: t("player.video")
+    };
+  }
+
+  return {
+    kind: "poster",
+    label: t("player.poster")
+  };
+}
+
+function bindAnalyzeResultActions(): void {
+  document.querySelectorAll<HTMLButtonElement>("[data-open-source-url]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const url = button.dataset.openSourceUrl;
+      if (!url) {
+        return;
+      }
+
+      try {
+        await window.appApi.openExternal(url);
+        appendLog(t("log.sourceOpened", { url }), "info");
+      } catch (error) {
+        presentError(parseInvokeError(error));
+      }
+    });
+  });
 }
 
 function renderShell(): void {
@@ -271,133 +409,145 @@ function renderShell(): void {
   app.innerHTML = `
     <div class="shell">
       <aside class="sidebar">
-        <div class="brand">
-          <p class="eyebrow">Portable Shell</p>
-          <h1>Dismas Downloader</h1>
-          <p class="lede">A rusted wrapper for lawful captures, local themes, and portable recovery paths.</p>
+        <div class="brand brand-bar">
+          <div>
+            <p class="eyebrow">${t("app.shell")}</p>
+            <h1>Dismas Downloader</h1>
+            <p class="lede">${t("app.subtitle")}</p>
+          </div>
+          <label class="language-switch">
+            <span>${t("lang.label")}</span>
+            <select id="locale-switch">
+              <option value="ru" ${state.locale === "ru" ? "selected" : ""}>${t("lang.ru")}</option>
+              <option value="en" ${state.locale === "en" ? "selected" : ""}>${t("lang.en")}</option>
+            </select>
+          </label>
         </div>
 
         <nav class="nav">
-          <button class="nav-button is-active" data-view="downloader">Downloader</button>
-          <button class="nav-button" data-view="queue">Queue</button>
-          <button class="nav-button" data-view="themes">Themes</button>
+          <button class="nav-button is-active" data-view="downloader">${t("nav.downloader")}</button>
+          <button class="nav-button" data-view="queue">${t("nav.queue")}</button>
+          <button class="nav-button" data-view="themes">${t("nav.themes")}</button>
         </nav>
 
-        <section class="sidebar-card legal-card">
-          <h2>Use With Permission</h2>
-          <p>This shell is intended for media you are allowed to download, archive, or transform.</p>
-        </section>
-
         <section class="sidebar-card theme-status-card">
-          <p class="eyebrow">Active Theme</p>
-          <h2 id="active-theme-name">Awaiting ember</h2>
-          <p id="active-theme-description">No theme has been applied yet.</p>
+          <p class="eyebrow">${t("theme.activeEyebrow")}</p>
+          <h2 id="active-theme-name">${t("theme.awaiting")}</h2>
+          <p id="active-theme-description">${t("theme.noActive")}</p>
         </section>
 
-        <section class="sidebar-card network-card">
-          <p class="eyebrow">Network Strategy</p>
-          <h2>Transport Layer</h2>
+        <details class="sidebar-card compact-details network-card">
+          <summary>
+            <div>
+              <p class="eyebrow">${t("network.eyebrow")}</p>
+              <h2>${t("network.title")}</h2>
+            </div>
+          </summary>
           <div class="mini-form">
             <label>
-              <span>Route</span>
+              <span>${t("network.route")}</span>
               <select id="network-strategy">
-                <option value="direct">Direct</option>
-                <option value="proxy">Proxy</option>
-                <option value="system-bypass">System DPI bypass</option>
+                <option value="direct">${t("network.direct")}</option>
+                <option value="proxy">${t("network.proxyMode")}</option>
+                <option value="system-bypass">${t("network.systemBypass")}</option>
               </select>
             </label>
             <label>
-              <span>Proxy URL</span>
+              <span>${t("network.proxy")}</span>
               <input id="proxy-url" type="text" placeholder="socks5://127.0.0.1:1080" />
             </label>
             <label>
-              <span>Impersonate</span>
+              <span>${t("network.impersonate")}</span>
               <input id="impersonate-value" type="text" placeholder="chrome-120:windows-10" />
             </label>
             <label>
-              <span>Cookies From Browser</span>
+              <span>${t("network.cookies")}</span>
               <input id="cookies-browser" type="text" placeholder="chrome" />
             </label>
           </div>
-          <p class="hint-copy">System bypass assumes an external Zapret2 or local proxy setup and may require administrator rights.</p>
-        </section>
+          <p class="hint-copy">${t("network.hint")}</p>
+        </details>
 
         <section class="sidebar-card system-card">
-          <p class="eyebrow">System Health</p>
-          <h2 id="system-summary">Scanning portable layout</h2>
-          <p id="system-mode-copy">Checking sidecar mode, binaries, themes, and portable notices.</p>
+          <p class="eyebrow">${t("system.eyebrow")}</p>
+          <h2 id="system-summary">${t("system.scanning")}</h2>
+          <p id="system-mode-copy">${t("system.modeCopy")}</p>
           <div class="system-actions">
-            <button id="repair-tools-button" class="accent-button" type="button">Repair Missing Tools</button>
+            <button id="repair-tools-button" class="accent-button" type="button">${t("system.repair")}</button>
           </div>
-          <div id="system-capabilities" class="capability-list empty-inline">Capabilities pending.</div>
-          <div id="system-components" class="component-list empty-inline">No diagnostics yet.</div>
+          <details class="compact-details system-details">
+            <summary>${t("system.details")}</summary>
+            <div id="system-capabilities" class="capability-list empty-inline">${t("system.capPending")}</div>
+            <div id="system-components" class="component-list empty-inline">${t("system.noDiag")}</div>
+          </details>
         </section>
+
+        <p class="sidebar-footnote">${t("app.legal")}</p>
       </aside>
 
       <main class="workspace">
         <header class="masthead">
           <div>
-            <p class="eyebrow">Starter Kit</p>
-            <h2 id="view-title">Downloader</h2>
+            <p class="eyebrow">${t("app.shell")}</p>
+            <h2 id="view-title">${t("nav.downloader")}</h2>
           </div>
           <div id="status-strip" class="status-strip">
-            <span class="status-pill">Portable roots</span>
-            <span class="status-pill">Context isolated</span>
-            <span class="status-pill">Diagnostics pending</span>
+            <span class="status-pill">${t("status.portable")}</span>
+            <span class="status-pill">${t("status.secure")}</span>
           </div>
         </header>
 
         <section id="notice-tray" class="notice-tray empty-state">
-          No active recovery notices.
+          ${t("notice.none")}
         </section>
 
         <section class="view is-active" data-panel="downloader">
           <div class="panel hero-panel">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Analyze</p>
-                <h3>Scout the target</h3>
+                <p class="eyebrow">${t("downloader.eyebrow")}</p>
+                <h3>${t("downloader.title")}</h3>
               </div>
             </div>
             <form id="analyze-form" class="stack-form">
               <label>
-                <span>Media URL</span>
-                <input id="url-input" name="url" type="url" placeholder="https://example.com/watch?v=..." required />
+                <span>${t("downloader.url")}</span>
+                <input id="url-input" name="url" type="url" placeholder="${t("downloader.urlPlaceholder")}" required />
               </label>
               <div class="form-actions">
-                <button type="submit" class="accent-button">Analyze</button>
+                <button type="submit" class="accent-button">${t("downloader.analyze")}</button>
               </div>
             </form>
             <article id="analyze-result" class="analyze-result empty-state">
-              No reconnaissance yet.
+              ${t("downloader.previewEmpty")}
             </article>
           </div>
 
           <div class="panel ritual-panel">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Download</p>
-                <h3>Commit the ritual</h3>
+                <p class="eyebrow">${t("download.eyebrow")}</p>
+                <h3>${t("download.title")}</h3>
               </div>
             </div>
             <form id="download-form" class="stack-form">
               <label>
-                <span>Output Directory</span>
-                <input id="output-dir-input" name="outputDir" type="text" placeholder="C:\\Users\\you\\Downloads" required />
+                <span>${t("download.output")}</span>
+                <input id="output-dir-input" name="outputDir" type="text" placeholder="${t("download.outputPlaceholder")}" />
               </label>
               <label>
-                <span>Preset</span>
+                <span>${t("download.preset")}</span>
                 <select id="preset-input" name="preset">
-                  <option value="best">Best Video + Audio</option>
-                  <option value="mp3">Audio Only MP3</option>
+                  <option value="best">${t("download.best")}</option>
+                  <option value="mp3">${t("download.mp3")}</option>
                 </select>
               </label>
               <div class="form-actions">
-                <button type="submit" class="accent-button">Start Download</button>
+                <button type="submit" class="accent-button">${t("download.start")}</button>
               </div>
             </form>
             <div id="download-current" class="current-task empty-state">
-              No active task.
+              ${t("download.noTask")}
             </div>
           </div>
         </section>
@@ -406,21 +556,26 @@ function renderShell(): void {
           <div class="panel queue-panel">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Queue</p>
-                <h3>March of the expedition</h3>
+                <p class="eyebrow">${t("queue.eyebrow")}</p>
+                <h3>${t("queue.title")}</h3>
               </div>
             </div>
-            <div id="queue-list" class="queue-list empty-state">The ledger is empty.</div>
+            <div id="queue-list" class="queue-list empty-state">${t("queue.empty")}</div>
+
+            <details class="compact-details queue-log-details">
+              <summary>${t("log.toggle")}</summary>
+              <div id="log-feed" class="log-feed empty-state">${t("log.empty")}</div>
+            </details>
           </div>
 
-          <div class="panel log-panel">
+          <div class="panel library-panel">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Event Log</p>
-                <h3>Scars and signals</h3>
+                <p class="eyebrow">${t("library.eyebrow")}</p>
+                <h3>${t("library.title")}</h3>
               </div>
             </div>
-            <div id="log-feed" class="log-feed empty-state">No omens yet.</div>
+            <div id="library-list" class="library-list empty-state">${t("library.empty")}</div>
           </div>
         </section>
 
@@ -429,59 +584,59 @@ function renderShell(): void {
             <div class="panel theme-browser-panel">
               <div class="panel-header">
                 <div>
-                  <p class="eyebrow">Themes</p>
-                  <h3>Portable skins</h3>
+                  <p class="eyebrow">${t("themes.eyebrow")}</p>
+                  <h3>${t("themes.title")}</h3>
                 </div>
               </div>
-              <div id="themes-grid" class="themes-grid empty-state">No themes discovered.</div>
+              <div id="themes-grid" class="themes-grid empty-state">${t("themes.empty")}</div>
             </div>
 
             <div class="panel theme-tools-panel">
               <div class="panel-header">
                 <div>
-                  <p class="eyebrow">Workshop</p>
-                  <h3>Import, export, create</h3>
+                  <p class="eyebrow">${t("workshop.eyebrow")}</p>
+                  <h3>${t("workshop.title")}</h3>
                 </div>
               </div>
 
               <form id="import-form" class="stack-form compact-form">
                 <label>
-                  <span>Theme archive path</span>
-                  <input name="filePath" type="text" placeholder="C:\\themes\\my-theme.ydtheme" required />
+                  <span>${t("workshop.importPath")}</span>
+                  <input name="filePath" type="text" placeholder="${t("workshop.importPlaceholder")}" required />
                 </label>
-                <button type="submit" class="accent-button">Import Theme</button>
+                <button type="submit" class="accent-button">${t("workshop.import")}</button>
               </form>
 
               <form id="export-form" class="stack-form compact-form">
                 <label>
-                  <span>Theme ID</span>
+                  <span>${t("workshop.exportId")}</span>
                   <input name="id" type="text" placeholder="default_darkest" required />
                 </label>
                 <label>
-                  <span>Output archive path</span>
-                  <input name="outPath" type="text" placeholder="C:\\themes\\darkest.ydtheme" required />
+                  <span>${t("workshop.exportPath")}</span>
+                  <input name="outPath" type="text" placeholder="${t("workshop.exportPlaceholder")}" required />
                 </label>
-                <button type="submit" class="ghost-button">Export Theme</button>
+                <button type="submit" class="ghost-button">${t("workshop.export")}</button>
               </form>
 
               <form id="create-theme-form" class="stack-form compact-form">
                 <label>
-                  <span>Theme ID</span>
+                  <span>${t("workshop.createId")}</span>
                   <input name="id" type="text" placeholder="blood_steel" required />
                 </label>
                 <label>
-                  <span>Display name</span>
+                  <span>${t("workshop.createName")}</span>
                   <input name="name" type="text" placeholder="Blood Steel" required />
                 </label>
                 <label>
-                  <span>Description</span>
+                  <span>${t("workshop.createDescription")}</span>
                   <input name="description" type="text" placeholder="Portable forged variant" />
                 </label>
                 <label>
-                  <span>Accent color</span>
+                  <span>${t("workshop.createAccent")}</span>
                   <input name="accent" type="text" placeholder="#8a0303" />
                 </label>
-                <button type="submit" class="ghost-button">Create Theme</button>
+                <button type="submit" class="ghost-button">${t("workshop.create")}</button>
               </form>
             </div>
           </div>
@@ -504,7 +659,8 @@ function updateView(nextView: ViewName): void {
 
   const title = document.querySelector<HTMLElement>("#view-title");
   if (title) {
-    title.textContent = nextView.charAt(0).toUpperCase() + nextView.slice(1);
+    title.textContent =
+      nextView === "downloader" ? t("nav.downloader") : nextView === "queue" ? t("nav.queue") : t("nav.themes");
   }
 }
 
@@ -516,7 +672,7 @@ function renderNotices(): void {
 
   if (state.notices.length === 0) {
     tray.className = "notice-tray empty-state";
-    tray.textContent = "No active recovery notices.";
+    tray.textContent = t("notice.none");
     return;
   }
 
@@ -557,14 +713,14 @@ function renderSystemStatus(): void {
   const status = state.systemStatus;
 
   if (!status) {
-    summary.textContent = "Scanning portable layout";
-    modeCopy.textContent = "Checking sidecar mode, binaries, themes, and portable notices.";
+    summary.textContent = t("system.scanning");
+    modeCopy.textContent = t("system.modeCopy");
     repairButton.disabled = true;
-    repairButton.textContent = "Repair Missing Tools";
+    repairButton.textContent = t("system.repair");
     capabilityList.className = "capability-list empty-inline";
-    capabilityList.textContent = "Capabilities pending.";
+    capabilityList.textContent = t("system.capPending");
     componentList.className = "component-list empty-inline";
-    componentList.textContent = "No diagnostics yet.";
+    componentList.textContent = t("system.noDiag");
     return;
   }
 
@@ -575,21 +731,25 @@ function renderSystemStatus(): void {
 
   repairButton.disabled = state.repairInFlight || autoRepairTargets.length === 0;
   repairButton.textContent = state.repairInFlight
-    ? "Repairing Tools..."
+    ? t("system.repairing")
     : autoRepairTargets.length > 0
-      ? `Repair Missing Tools (${autoRepairTargets.length})`
-      : "Repair Missing Tools";
+      ? `${t("system.repair")} (${autoRepairTargets.length})`
+      : t("system.repair");
 
   summary.textContent =
-    blockerCount === 0 ? `Operational posture ${readyCount}/${status.components.length}` : `${blockerCount} blocker${blockerCount === 1 ? "" : "s"} detected`;
+    blockerCount === 0
+      ? `${t("availability.ready")} ${readyCount}/${status.components.length}`
+      : t("status.blockers", { count: blockerCount });
 
-  modeCopy.textContent = `Sidecar mode: ${status.sidecarMode}${status.sidecarVersion ? ` (${status.sidecarVersion})` : ""}. ${warningCount > 0 ? `${warningCount} attention marker${warningCount === 1 ? "" : "s"} active.` : "No active warnings."}`;
+  modeCopy.textContent =
+    `${t("status.mode", { mode: status.sidecarMode })}${status.sidecarVersion ? ` (${status.sidecarVersion})` : ""}. ` +
+    `${warningCount > 0 ? `${t("availability.warning")}: ${warningCount}` : t("status.noBlockers")}`;
 
   const capabilityEntries = [
-    { label: "Analyze", value: status.capabilities.canAnalyze },
-    { label: "Download", value: status.capabilities.canDownload },
+    { label: t("downloader.analyze"), value: status.capabilities.canAnalyze },
+    { label: t("download.title"), value: status.capabilities.canDownload },
     { label: "YouTube", value: status.capabilities.canUseYoutube },
-    { label: "Themes", value: status.capabilities.canManageThemes }
+    { label: t("nav.themes"), value: status.capabilities.canManageThemes }
   ];
 
   capabilityList.className = "capability-list";
@@ -597,7 +757,7 @@ function renderSystemStatus(): void {
     .map(
       (entry) => `
         <span class="capability-pill ${entry.value ? "is-ready" : "is-blocked"}">
-          ${escapeHtml(entry.label)}: ${entry.value ? "ready" : "limited"}
+          ${escapeHtml(entry.label)}: ${entry.value ? t("status.ready") : t("status.limited")}
         </span>
       `
     )
@@ -613,11 +773,11 @@ function renderSystemStatus(): void {
             <span class="component-state">${escapeHtml(availabilityLabel(component.availability))}</span>
           </div>
           <p>${escapeHtml(component.summary)}</p>
-          <p class="component-help">${escapeHtml(component.help[0] ?? "No recovery hint recorded.")}</p>
+          <p class="component-help">${escapeHtml(component.help[0] ?? t("system.noHint"))}</p>
           <div class="component-links">
             ${
               component.sourceUrl
-                ? `<button class="ghost-button source-link-button" type="button" data-source-url="${escapeHtml(component.sourceUrl)}">Open Source</button>`
+                ? `<button class="ghost-button source-link-button" type="button" data-source-url="${escapeHtml(component.sourceUrl)}">${t("system.openSource")}</button>`
                 : ""
             }
             ${
@@ -632,10 +792,9 @@ function renderSystemStatus(): void {
     .join("");
 
   statusStrip.innerHTML = `
-    <span class="status-pill">Portable roots</span>
-    <span class="status-pill">Context isolated</span>
-    <span class="status-pill">Mode: ${escapeHtml(status.sidecarMode)}</span>
-    <span class="status-pill">${escapeHtml(blockerCount === 0 ? "No hard blockers" : `${blockerCount} blocker${blockerCount === 1 ? "" : "s"}`)}</span>
+    <span class="status-pill">${t("status.portable")}</span>
+    <span class="status-pill">${t("status.mode", { mode: status.sidecarMode })}</span>
+    <span class="status-pill">${escapeHtml(blockerCount === 0 ? t("status.noBlockers") : t("status.blockers", { count: blockerCount }))}</span>
   `;
 
   componentList.querySelectorAll<HTMLButtonElement>("[data-source-url]").forEach((button) => {
@@ -647,7 +806,7 @@ function renderSystemStatus(): void {
 
       try {
         await window.appApi.openExternal(url);
-        appendLog(`Opened source URL: ${url}`, "info");
+        appendLog(t("log.sourceOpened", { url }), "info");
       } catch (error) {
         presentError(parseInvokeError(error));
       }
@@ -665,27 +824,81 @@ function renderAnalyzeResult(): void {
 
   if (!result) {
     container.className = "analyze-result empty-state";
-    container.innerHTML = "No reconnaissance yet.";
+    container.innerHTML = t("downloader.previewEmpty");
     return;
   }
 
+  const player = buildPreviewPlayer(result);
+  const avatarLabel = (result.uploader ?? result.title ?? "D").trim().charAt(0).toUpperCase() || "D";
+  const posterStyle = result.thumbnailUrl ? ` style="background-image:url('${escapeHtml(result.thumbnailUrl)}')"` : "";
+
   container.className = "analyze-result";
   container.innerHTML = `
-    <div class="result-media">
-      ${
-        result.thumbnailUrl
-          ? `<img class="result-thumb" src="${escapeHtml(result.thumbnailUrl)}" alt="Thumbnail for ${escapeHtml(result.title)}" />`
-          : `<div class="result-thumb result-thumb--empty">No preview</div>`
-      }
-      <div class="result-copy">
-        <p class="eyebrow">Source</p>
-        <h4>${escapeHtml(result.title)}</h4>
-        <p>${escapeHtml(result.uploader ?? "Unknown uploader")} - ${escapeHtml(result.extractor ?? "Unknown extractor")}</p>
-        <p>Duration: ${escapeHtml(result.durationSeconds ? `${Math.round(result.durationSeconds)}s` : "unknown")}</p>
-        <p>Formats discovered: ${result.formats.length}</p>
+    <div class="youtube-preview-shell">
+      <div class="youtube-stage-card">
+        ${
+          player.kind === "youtube"
+            ? `<iframe
+                class="youtube-frame youtube-frame--embed"
+                src="${escapeHtml(player.src)}"
+                title="${escapeHtml(result.title)}"
+                loading="lazy"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerpolicy="strict-origin-when-cross-origin"
+                allowfullscreen
+              ></iframe>`
+            : player.kind === "video"
+              ? `<video
+                  class="youtube-frame youtube-frame--video"
+                  src="${escapeHtml(player.src)}"
+                  poster="${escapeHtml(result.thumbnailUrl ?? "")}"
+                  controls
+                  preload="metadata"
+                  playsinline
+                ></video>`
+              : `<div class="youtube-frame youtube-frame--poster"${posterStyle}>
+                  <div class="youtube-frame-scrim"></div>
+                  <div class="youtube-play-badge" aria-hidden="true"></div>
+                  <div class="youtube-fake-controls">
+                    <div class="youtube-progress-track"><span></span></div>
+                    <div class="youtube-control-row">
+                      <span>${t("player.poster")}</span>
+                      <span>16:9</span>
+                    </div>
+                  </div>
+                </div>`
+        }
+      </div>
+
+      <div class="youtube-meta-card">
+        <div class="youtube-heading-row">
+          <div>
+            <p class="eyebrow">${escapeHtml(player.label)}</p>
+            <h4>${escapeHtml(result.title)}</h4>
+          </div>
+          <button class="ghost-button preview-source-button" type="button" data-open-source-url="${escapeHtml(result.webpageUrl)}">
+            ${t("player.openSource")}
+          </button>
+        </div>
+
+        <div class="youtube-channel-row">
+          <div class="youtube-avatar">${escapeHtml(avatarLabel)}</div>
+          <div class="youtube-channel-copy">
+            <strong>${escapeHtml(result.uploader ?? t("common.unknownUploader"))}</strong>
+            <p>${escapeHtml(player.kind === "poster" ? t("player.posterHint") : t("player.embedHint"))}</p>
+          </div>
+        </div>
+
+        <div class="youtube-stat-row">
+          <span class="youtube-chip">${escapeHtml(t("downloader.duration", { value: formatDuration(result.durationSeconds) }))}</span>
+          <span class="youtube-chip">${escapeHtml(t("downloader.formats", { count: result.formats.length }))}</span>
+          <span class="youtube-chip">${escapeHtml(result.extractor ?? t("common.unknownExtractor"))}</span>
+        </div>
       </div>
     </div>
   `;
+
+  bindAnalyzeResultActions();
 }
 
 function renderCurrentTask(): void {
@@ -698,20 +911,20 @@ function renderCurrentTask(): void {
 
   if (!latestTask) {
     container.className = "current-task empty-state";
-    container.textContent = "No active task.";
+    container.textContent = t("download.noTask");
     return;
   }
 
-  const progressPercent = typeof latestTask.percent === "number" ? `${latestTask.percent.toFixed(1)}%` : "Awaiting";
+  const progressPercent = typeof latestTask.percent === "number" ? `${latestTask.percent.toFixed(1)}%` : t("download.awaiting");
 
   container.className = "current-task";
   container.innerHTML = `
     <div class="task-card-head">
       <div>
-        <p class="eyebrow">Task ${escapeHtml(latestTask.id.slice(0, 8))}</p>
-        <h4>${escapeHtml(latestTask.preset ?? "preset")} - ${escapeHtml(statusText(latestTask))}</h4>
+        <p class="eyebrow">${escapeHtml(t("download.task", { id: latestTask.id.slice(0, 8) }))}</p>
+        <h4>${escapeHtml(presetLabel(latestTask.preset))} - ${escapeHtml(statusText(latestTask))}</h4>
       </div>
-      <button class="danger-button" data-cancel-id="${escapeHtml(latestTask.id)}">Cancel</button>
+      <button class="danger-button" data-cancel-id="${escapeHtml(latestTask.id)}">${t("download.cancel")}</button>
     </div>
     <div class="stress-track">
       <div class="stress-fill" style="width:${typeof latestTask.percent === "number" ? latestTask.percent : 0}%"></div>
@@ -727,7 +940,7 @@ function renderCurrentTask(): void {
 
     try {
       await window.appApi.cancelDownload(id);
-      appendLog(`Withdrawal ordered for task ${id}.`, "warning");
+      appendLog(t("log.cancelOrdered", { id }), "warning");
     } catch (error) {
       presentError(parseInvokeError(error));
     }
@@ -744,7 +957,7 @@ function renderQueue(): void {
 
   if (tasks.length === 0) {
     queueList.className = "queue-list empty-state";
-    queueList.textContent = "The ledger is empty.";
+    queueList.textContent = t("queue.empty");
     return;
   }
 
@@ -755,16 +968,92 @@ function renderQueue(): void {
         <article class="queue-item status-${task.status}">
           <div>
             <p class="eyebrow">${escapeHtml(task.id)}</p>
-            <h4>${escapeHtml(task.url ?? "Unknown target")}</h4>
+            <h4>${escapeHtml(task.url ?? t("downloader.urlPlaceholder"))}</h4>
           </div>
           <div class="queue-meta">
             <strong>${escapeHtml(statusText(task))}</strong>
-            <span>${escapeHtml(task.preset ?? "unknown")}${task.outputPath ? ` - ${escapeHtml(task.outputPath)}` : ""}</span>
+            <span>${escapeHtml(presetLabel(task.preset))}${task.outputPath ? ` - ${escapeHtml(task.outputPath)}` : ""}</span>
           </div>
         </article>
       `
     )
     .join("");
+}
+
+function renderLibrary(): void {
+  const list = document.querySelector<HTMLDivElement>("#library-list");
+  if (!list) {
+    return;
+  }
+
+  if (state.library.length === 0) {
+    list.className = "library-list empty-state";
+    list.textContent = t("library.empty");
+    return;
+  }
+
+  list.className = "library-list";
+  list.innerHTML = state.library
+    .map(
+      (entry) => `
+        <article class="library-card ${entry.fileExists ? "" : "is-missing"}">
+          <div class="library-card-head">
+            <div class="library-thumb">
+              ${
+                entry.thumbnailUrl
+                  ? `<img src="${escapeHtml(entry.thumbnailUrl)}" alt="${escapeHtml(entry.title)}" />`
+                  : `<div class="library-thumb-placeholder">${escapeHtml(entry.title.slice(0, 1).toUpperCase())}</div>`
+              }
+            </div>
+            <div class="library-copy">
+              <p class="eyebrow">${escapeHtml(presetLabel(entry.preset))}</p>
+              <h4>${escapeHtml(entry.title)}</h4>
+              <p>${escapeHtml(entry.uploader ?? t("common.unknownUploader"))}</p>
+            </div>
+            <button
+              class="${entry.fileExists ? "accent-button" : "ghost-button"}"
+              type="button"
+              data-open-library-path="${escapeHtml(entry.outputPath)}"
+              ${entry.fileExists ? "" : "disabled"}
+            >
+              ${entry.fileExists ? t("library.play") : t("library.fileMissing")}
+            </button>
+          </div>
+          <div class="library-meta-row">
+            <span class="youtube-chip">${escapeHtml(t("library.duration"))}: ${escapeHtml(entry.durationSeconds ? formatDuration(entry.durationSeconds) : t("library.unknownDuration"))}</span>
+            <span class="youtube-chip">${escapeHtml(t("library.published"))}: ${escapeHtml(formatAbsoluteDate(entry.publishedAt))}</span>
+            <span class="youtube-chip">${escapeHtml(t("library.downloaded"))}: ${escapeHtml(formatAbsoluteDate(entry.downloadedAt))}</span>
+          </div>
+          <p class="component-path"><strong>${escapeHtml(t("library.path"))}:</strong> ${escapeHtml(entry.outputPath)}</p>
+        </article>
+      `
+    )
+    .join("");
+
+  list.querySelectorAll<HTMLButtonElement>("[data-open-library-path]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const targetPath = button.dataset.openLibraryPath;
+      if (!targetPath) {
+        return;
+      }
+
+      try {
+        const result = await window.appApi.openPath(targetPath);
+        if (!result.opened) {
+          presentError({
+            code: "IO_ERROR",
+            message: result.error || `Failed to open file: ${targetPath}`,
+            recoverable: true
+          });
+          return;
+        }
+
+        appendLog(`${t("library.play")}: ${targetPath}`, "info");
+      } catch (error) {
+        presentError(parseInvokeError(error));
+      }
+    });
+  });
 }
 
 function renderLogFeed(): void {
@@ -775,7 +1064,7 @@ function renderLogFeed(): void {
 
   if (state.logs.length === 0) {
     feed.className = "log-feed empty-state";
-    feed.textContent = "No omens yet.";
+    feed.textContent = t("log.empty");
     return;
   }
 
@@ -801,13 +1090,13 @@ function renderThemeStatus(theme: ThemeSummary | null): void {
   }
 
   if (!theme) {
-    name.textContent = "Awaiting ember";
-    description.textContent = "No theme has been applied yet.";
+    name.textContent = t("theme.awaiting");
+    description.textContent = t("theme.noActive");
     return;
   }
 
   name.textContent = theme.name;
-  description.textContent = theme.description ?? "A portable skin is holding the shell together.";
+  description.textContent = theme.description ?? t("theme.fallbackDescription");
 }
 
 function renderThemes(): void {
@@ -818,7 +1107,7 @@ function renderThemes(): void {
 
   if (state.themes.length === 0) {
     grid.className = "themes-grid empty-state";
-    grid.textContent = "No themes discovered.";
+    grid.textContent = t("themes.empty");
     return;
   }
 
@@ -831,20 +1120,20 @@ function renderThemes(): void {
             ${
               theme.previewUrl
                 ? `<img src="${escapeHtml(theme.previewUrl)}" alt="Preview for ${escapeHtml(theme.name)}" />`
-                : `<div class="theme-preview-placeholder">No preview</div>`
+                : `<div class="theme-preview-placeholder">${t("theme.noPreview")}</div>`
             }
           </div>
           <div class="theme-copy">
-            <p class="eyebrow">${escapeHtml(theme.id)}</p>
+            <p class="eyebrow">${escapeHtml(theme.version)}</p>
             <h4>${escapeHtml(theme.name)}</h4>
-            <p>${escapeHtml(theme.description ?? "No description.")}</p>
+            <p>${escapeHtml(theme.description ?? t("theme.noDescription"))}</p>
             <div class="theme-meta">
-              <span>${escapeHtml(theme.version)}</span>
+              <span>${escapeHtml(theme.id)}</span>
               <span>${escapeHtml(theme.author)}</span>
             </div>
           </div>
           <button class="${theme.active ? "ghost-button" : "accent-button"}" data-apply-theme="${escapeHtml(theme.id)}">
-            ${theme.active ? "Active" : "Apply Theme"}
+            ${theme.active ? t("theme.active") : t("theme.apply")}
           </button>
         </article>
       `
@@ -865,7 +1154,7 @@ function renderThemes(): void {
         applyThemeStyles(theme);
         renderThemeStatus(theme);
         renderThemes();
-        appendLog(`Theme ${theme.name} now rules the shell.`, "success");
+        appendLog(t("log.themeApplied", { name: theme.name }), "success");
       } catch (error) {
         presentError(parseInvokeError(error));
       }
@@ -882,6 +1171,28 @@ function bindNavigation(): void {
       }
     });
   });
+}
+
+function bindLanguageSwitcher(): void {
+  const select = document.querySelector<HTMLSelectElement>("#locale-switch");
+  if (!select) {
+    return;
+  }
+
+  select.addEventListener("change", () => {
+    const next = select.value === "ru" ? "ru" : "en";
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, next);
+    window.location.reload();
+  });
+}
+
+function syncDefaultOutputDir(): void {
+  const outputInput = document.querySelector<HTMLInputElement>("#output-dir-input");
+  if (!outputInput || !state.defaultOutputDir || outputInput.value.trim()) {
+    return;
+  }
+
+  outputInput.value = state.defaultOutputDir;
 }
 
 function bindSystemActions(): void {
@@ -907,7 +1218,7 @@ function bindAnalyzeForm(): void {
     const url = String(formData.get("url") ?? "").trim();
 
     if (!url) {
-      appendLog("A URL is required before reconnaissance.", "warning");
+      appendLog(t("log.urlRequired"), "warning");
       return;
     }
 
@@ -915,10 +1226,10 @@ function bindAnalyzeForm(): void {
       const result = await window.appApi.analyzeUrl(url, readNetworkSettings());
       state.analyzeResult = result;
       renderAnalyzeResult();
-      appendLog(`Analysis completed for ${result.title}.`, "success");
+      appendLog(t("log.analyzeSuccess", { title: result.title }), "success");
     } catch (error) {
       presentError(parseInvokeError(error));
-      void refreshSystemStatus(false);
+      void refreshSystemStatus();
     }
   });
 }
@@ -948,20 +1259,34 @@ function bindDownloadForm(): void {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(form);
+    const outputDir = String(formData.get("outputDir") ?? "").trim() || state.defaultOutputDir;
+    const initialAnalyzed = state.analyzeResult && state.analyzeResult.url === urlInput.value.trim() ? state.analyzeResult : null;
     const payload: DownloadRequest = {
       id: crypto.randomUUID(),
       url: urlInput.value.trim(),
-      outputDir: String(formData.get("outputDir") ?? "").trim(),
+      outputDir,
       preset: String(formData.get("preset") ?? "best") === "mp3" ? "mp3" : "best",
       network: readNetworkSettings()
     };
 
     if (!payload.url || !payload.outputDir) {
-      appendLog("URL and output directory are both required.", "warning");
+      appendLog(t("log.urlOutputRequired"), "warning");
       return;
     }
 
     try {
+      const analyzed = initialAnalyzed ?? (await window.appApi.analyzeUrl(payload.url, payload.network));
+      state.analyzeResult = analyzed;
+      renderAnalyzeResult();
+      payload.metadata = {
+        title: analyzed.title,
+        webpageUrl: analyzed.webpageUrl,
+        durationSeconds: analyzed.durationSeconds,
+        publishedAt: analyzed.publishedAt ?? null,
+        thumbnailUrl: analyzed.thumbnailUrl,
+        uploader: analyzed.uploader
+      };
+
       await window.appApi.startDownload(payload);
       state.tasks.set(payload.id, {
         id: payload.id,
@@ -973,10 +1298,10 @@ function bindDownloadForm(): void {
       renderQueue();
       renderCurrentTask();
       updateView("queue");
-      appendLog(`Task ${payload.id} accepted into the march.`, "info");
+      appendLog(t("log.taskAccepted", { id: payload.id }), "info");
     } catch (error) {
       presentError(parseInvokeError(error));
-      void refreshSystemStatus(false);
+      void refreshSystemStatus();
     }
   });
 }
@@ -995,7 +1320,7 @@ function bindThemeForms(): void {
       const theme = await window.appApi.importTheme(filePath);
       state.themes = await window.appApi.getThemes();
       renderThemes();
-      appendLog(`Imported theme ${theme.name}.`, "success");
+      appendLog(t("log.themeImported", { name: theme.name }), "success");
     } catch (error) {
       presentError(parseInvokeError(error));
     }
@@ -1009,7 +1334,7 @@ function bindThemeForms(): void {
 
     try {
       const result = await window.appApi.exportTheme(id, outPath);
-      appendLog(`Theme ${id} exported to ${result.outPath}.`, "success");
+      appendLog(t("log.themeExported", { id, path: result.outPath }), "success");
     } catch (error) {
       presentError(parseInvokeError(error));
     }
@@ -1030,7 +1355,7 @@ function bindThemeForms(): void {
       });
       state.themes = await window.appApi.getThemes();
       renderThemes();
-      appendLog(`Created theme ${theme.name}.`, "success");
+      appendLog(t("log.themeCreated", { name: theme.name }), "success");
     } catch (error) {
       presentError(parseInvokeError(error));
     }
@@ -1043,7 +1368,7 @@ function handleDownloadEvent(event: DownloadEventEnvelope): void {
     pushNotice(event.payload.title, event.payload.message, event.payload.tone, event.payload.steps ?? []);
 
     if (event.payload.refreshStatus) {
-      void refreshSystemStatus(false);
+      void refreshSystemStatus();
     }
 
     return;
@@ -1051,7 +1376,7 @@ function handleDownloadEvent(event: DownloadEventEnvelope): void {
 
   if (event.event === "system.error") {
     presentError(event.payload.error);
-    void refreshSystemStatus(false);
+    void refreshSystemStatus();
     return;
   }
 
@@ -1063,15 +1388,15 @@ function handleDownloadEvent(event: DownloadEventEnvelope): void {
       preset: event.payload.preset,
       url: event.payload.url
     });
-    appendLog(`Task ${event.payload.id} queued.`, "info");
+    appendLog(t("log.taskAccepted", { id: event.payload.id }), "info");
   }
 
   if (event.event === "download.started") {
     const existing = state.tasks.get(event.payload.id);
     if (existing) {
-      state.tasks.set(event.payload.id, { ...existing, status: "started", message: "Transfer engaged" });
+      state.tasks.set(event.payload.id, { ...existing, status: "started", message: t("download.awaiting") });
     }
-    appendLog(`Task ${event.payload.id} started.`, "info");
+    appendLog(t("log.taskAccepted", { id: event.payload.id }), "info");
   }
 
   if (event.event === "download.progress") {
@@ -1091,9 +1416,10 @@ function handleDownloadEvent(event: DownloadEventEnvelope): void {
       status: "completed",
       percent: 100,
       outputPath: event.payload.outputPath ?? null,
-      message: event.payload.message ?? "Payload secured"
+      message: event.payload.message ?? t("task.completed")
     });
     appendLog(`Task ${event.payload.id} completed.`, "success");
+    void loadLibrary();
   }
 
   if (event.event === "download.failed") {
@@ -1114,7 +1440,7 @@ function handleDownloadEvent(event: DownloadEventEnvelope): void {
       ...(existing ?? { id: event.payload.id, status: "cancelled", percent: null }),
       status: "cancelled",
       percent: existing?.percent ?? null,
-      message: "Retreat ordered"
+      message: t("task.cancelled")
     });
     appendLog(`Task ${event.payload.id} was cancelled.`, "warning");
   }
@@ -1151,6 +1477,11 @@ async function loadThemes(): Promise<void> {
   renderThemes();
 }
 
+async function loadLibrary(): Promise<void> {
+  state.library = await window.appApi.getLibrary();
+  renderLibrary();
+}
+
 function shouldAutoRepair(status: SystemStatus | null): boolean {
   if (!status) {
     return false;
@@ -1168,41 +1499,29 @@ async function ensureRuntimeTools(mode: "auto" | "manual"): Promise<void> {
   renderSystemStatus();
 
   if (mode === "auto") {
-    pushNotice(
-      "Automatic Runtime Repair",
-      "The app detected missing portable tools and started downloading the configured direct binaries.",
-      "info"
-    );
+    pushNotice(t("notice.autoRepairTitle"), t("notice.autoRepairMessage"), "info");
   }
 
   try {
     state.systemStatus = await window.appApi.repairRuntimeTools();
     renderSystemStatus();
-    appendLog("Portable tool repair finished.", "success");
+    appendLog(t("log.repairDone"), "success");
   } catch (error) {
     presentError(parseInvokeError(error));
   } finally {
     state.repairInFlight = false;
     renderSystemStatus();
-    await refreshSystemStatus(false);
+    await refreshSystemStatus();
   }
 }
 
-async function refreshSystemStatus(pushRecoveredNotice = true): Promise<void> {
+async function refreshSystemStatus(): Promise<void> {
   try {
     state.systemStatus = await window.appApi.getSystemStatus();
     renderSystemStatus();
 
     for (const notice of state.systemStatus.notices) {
-      pushNotice("Recovery Hint", notice, "warning");
-    }
-
-    if (pushRecoveredNotice && state.systemStatus.notices.length === 0) {
-      pushNotice(
-        "System Ready",
-        "Portable diagnostics completed without active blockers. You can still inspect the sidebar for optional improvements.",
-        "success"
-      );
+      pushNotice(t("system.details"), notice, "warning");
     }
   } catch (error) {
     presentError(parseInvokeError(error));
@@ -1212,6 +1531,7 @@ async function refreshSystemStatus(pushRecoveredNotice = true): Promise<void> {
 async function bootstrap(): Promise<void> {
   renderShell();
   bindNavigation();
+  bindLanguageSwitcher();
   bindSystemActions();
   bindAnalyzeForm();
   bindDownloadForm();
@@ -1219,10 +1539,19 @@ async function bootstrap(): Promise<void> {
   renderAnalyzeResult();
   renderCurrentTask();
   renderQueue();
+  renderLibrary();
   renderLogFeed();
   renderNotices();
   renderSystemStatus();
   updateView("downloader");
+
+  try {
+    state.defaultOutputDir = await window.appApi.getDefaultOutputDir();
+  } catch {
+    state.defaultOutputDir = "";
+  }
+
+  syncDefaultOutputDir();
 
   window.appApi.subscribeDownloadEvents(handleDownloadEvent);
   window.appApi.subscribeThemeEvents(handleThemeEvent);
@@ -1235,7 +1564,13 @@ async function bootstrap(): Promise<void> {
 
   try {
     await loadThemes();
-    appendLog("Themes discovered and bound to the shell.", "success");
+    appendLog(t("log.themesLoaded"), "success");
+  } catch (error) {
+    presentError(parseInvokeError(error));
+  }
+
+  try {
+    await loadLibrary();
   } catch (error) {
     presentError(parseInvokeError(error));
   }

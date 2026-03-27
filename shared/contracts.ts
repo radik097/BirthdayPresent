@@ -99,9 +99,19 @@ export interface AnalyzeResult {
   extractor: string | null;
   title: string;
   durationSeconds: number | null;
+  publishedAt?: string | null;
   thumbnailUrl: string | null;
   uploader: string | null;
   formats: AnalyzeFormat[];
+}
+
+export interface DownloadMetadata {
+  title?: string | null;
+  webpageUrl?: string | null;
+  durationSeconds?: number | null;
+  publishedAt?: string | null;
+  thumbnailUrl?: string | null;
+  uploader?: string | null;
 }
 
 export type NetworkStrategy = "direct" | "proxy" | "system-bypass";
@@ -126,6 +136,7 @@ export interface DownloadRequest {
   outputDir: string;
   preset: DownloadPreset;
   network?: NetworkSettings;
+  metadata?: DownloadMetadata;
 }
 
 export interface DownloadQueuedPayload {
@@ -166,6 +177,21 @@ export interface DownloadCancelledPayload {
 
 export interface ThemeAppliedPayload {
   theme: ThemeSummary | ThemeRecord;
+}
+
+export interface LibraryEntry {
+  id: string;
+  title: string;
+  sourceUrl: string;
+  webpageUrl?: string | null;
+  outputPath: string;
+  preset: DownloadPreset;
+  durationSeconds?: number | null;
+  publishedAt?: string | null;
+  downloadedAt: string;
+  thumbnailUrl?: string | null;
+  uploader?: string | null;
+  fileExists: boolean;
 }
 
 export interface SystemErrorPayload {
@@ -228,9 +254,12 @@ export interface AppApi {
   analyzeUrl(url: string, network?: NetworkSettings): Promise<AnalyzeResult>;
   startDownload(payload: DownloadRequest): Promise<StartDownloadResponse>;
   cancelDownload(id: string): Promise<{ cancelled: boolean; id: string }>;
+  getDefaultOutputDir(): Promise<string>;
+  getLibrary(): Promise<LibraryEntry[]>;
   getSystemStatus(): Promise<SystemStatus>;
   repairRuntimeTools(): Promise<SystemStatus>;
   openExternal(url: string): Promise<{ opened: boolean }>;
+  openPath(targetPath: string): Promise<{ opened: boolean; error?: string | null }>;
   getThemes(): Promise<ThemeSummary[]>;
   applyTheme(id: string): Promise<ThemeSummary>;
   importTheme(filePath: string): Promise<ThemeSummary>;

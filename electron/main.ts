@@ -7,6 +7,7 @@ import type {
   AppRpcError,
   CreateThemeRequest,
   DownloadRequest,
+  LibraryEntry,
   SidecarEvent,
   StartDownloadResponse,
   SystemNoticePayload,
@@ -61,7 +62,6 @@ function createWindow(): BrowserWindow {
 
   if (devServerUrl) {
     void window.loadURL(devServerUrl);
-    window.webContents.openDevTools({ mode: "detach" });
   } else {
     void window.loadFile(runtimePaths.rendererIndexHtml);
   }
@@ -149,6 +149,12 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle("download:cancel", async (_event, id: string) =>
     invokeSidecar<{ cancelled: boolean; id: string }>("download.cancel", { id })
   );
+  ipcMain.handle("app:downloadsDir", async () => app.getPath("downloads"));
+  ipcMain.handle("app:openPath", async (_event, targetPath: string) => {
+    const error = await shell.openPath(targetPath);
+    return { opened: error.length === 0, error: error || null };
+  });
+  ipcMain.handle("library:list", async () => invokeSidecar<LibraryEntry[]>("library.list"));
   ipcMain.handle("system:status", async () => sidecar.getSystemStatus());
   ipcMain.handle("system:repairTools", async () => {
     try {

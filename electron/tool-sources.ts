@@ -4,6 +4,7 @@ export interface RuntimeToolSource {
   fileName: string;
   url: string;
   autoInstall: boolean;
+  installCommand?: string;
 }
 
 export const YT_DLP_SOURCE: RuntimeToolSource = {
@@ -28,4 +29,13 @@ export const FFMPEG_SOURCE: RuntimeToolSource = {
   fileName: "ffmpeg.exe",
   url: "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-2026-03-22-git-9c63742425-essentials_build.7z",
   autoInstall: true
+};
+
+export const DENO_SOURCE: RuntimeToolSource = {
+  id: "deno",
+  label: "Deno runtime",
+  fileName: "deno.exe",
+  url: "https://deno.land/install.ps1",
+  autoInstall: true,
+  installCommand: "irm https://deno.land/install.ps1 | iex"
 };

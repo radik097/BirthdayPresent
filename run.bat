@@ -31,7 +31,7 @@ echo [ERROR] Unknown mode: %MODE%
 goto help_err
 
 :dev
-echo [INFO] Starting development mode with Vite + Electron + mock sidecar...
+echo [INFO] Starting development mode with Vite + Electron + the current runtime sidecar...
 call npm run dev
 exit /b %errorlevel%
 

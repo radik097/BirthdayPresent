@@ -10,7 +10,9 @@ import type {
   AnalyzeResult,
   AppRpcError,
   CreateThemeRequest,
+  DownloadMetadata,
   DownloadRequest,
+  LibraryEntry,
   SidecarEvent,
   StartDownloadResponse,
   SystemStatus,
@@ -23,6 +25,7 @@ type DownloadRecord = {
   child: ReturnType<typeof spawn>;
   cancelled: boolean;
   outputPath: string | null;
+  lastError: string | null;
 };
 
 function createError(code: AppRpcError["code"], message: string, details?: unknown): AppRpcError {
@@ -105,6 +108,17 @@ function classifyDownloadError(stderr: string): AppRpcError {
   const text = stderr.trim();
   const lower = text.toLowerCase();
 
+  if (lower.includes("video unavailable") || lower.includes("private video") || lower.includes("this video is unavailable")) {
+    return createError("DOWNLOAD_ERROR", text || "The video is unavailable, private, or blocked for this session.", {
+      category: "SOURCE",
+      help: [
+        "Check whether the video opens in the browser.",
+        "If access is limited, try cookies from browser.",
+        "If the provider blocks your route, try another network path."
+      ]
+    });
+  }
+
   if (lower.includes("not a bot") || lower.includes("sign in to confirm")) {
     return createError("DOWNLOAD_ERROR", text || "The provider requested an anti-bot sign-in challenge.", {
       category: "ANTI_BOT",
@@ -132,6 +146,33 @@ function classifyDownloadError(stderr: string): AppRpcError {
 
 function createGeneratedThemeCss(): string {
   return `:root {\n  --frame-texture: none;\n}\n\n.panel,\n.sidebar-card,\n.theme-card,\n.queue-item,\n.log-entry,\n.nav-button {\n  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 34px -26px rgba(0, 0, 0, 0.62);\n}\n`;
+}
+
+function parseCompactDate(value: string | null | undefined): string | null {
+  if (!value || !/^\d{8}$/.test(value)) {
+    return null;
+  }
+
+  const year = value.slice(0, 4);
+  const month = value.slice(4, 6);
+  const day = value.slice(6, 8);
+  return `${year}-${month}-${day}T00:00:00.000Z`;
+}
+
+function derivePublishedAt(info: Record<string, unknown>): string | null {
+  if (typeof info.release_timestamp === "number") {
+    return new Date(info.release_timestamp * 1000).toISOString();
+  }
+
+  if (typeof info.timestamp === "number") {
+    return new Date(info.timestamp * 1000).toISOString();
+  }
+
+  if (typeof info.upload_date === "string") {
+    return parseCompactDate(info.upload_date);
+  }
+
+  return null;
 }
 
 export class FallbackService {
@@ -193,6 +234,8 @@ export class FallbackService {
         return (await this.startDownload((params ?? {}) as DownloadRequest)) as T;
       case "download.cancel":
         return (await this.cancelDownload(String((params as { id?: string } | undefined)?.id ?? "").trim())) as T;
+      case "library.list":
+        return (await this.listLibrary()) as T;
       default:
         throw createError("UNKNOWN", `The fallback backend does not know how to handle: ${method}`);
     }
@@ -205,13 +248,22 @@ export class FallbackService {
   private async requireBinary(fileName: string): Promise<string> {
     const binaryPath = path.join(this.paths.libsDir, fileName);
     if (!(await exists(binaryPath))) {
+      const denoHelp =
+        fileName === "deno.exe"
+          ? [
+              "Run `irm https://deno.land/install.ps1 | iex` and copy `deno.exe` into libs/.",
+              "Place deno.exe into libs/.",
+              "Keep the source URL, version, and license notice with the binary."
+            ]
+          : [
+              `Place ${fileName} into libs/.`,
+              "Keep the source URL, version, and license notice with the binary."
+            ];
+
       throw createError("BINARY_MISSING", `Missing required binary: ${fileName}`, {
         binary: fileName,
         expectedPath: binaryPath,
-        help: [
-          `Place ${fileName} into libs/.`,
-          "Keep the source URL, version, and license notice with the binary."
-        ]
+        help: denoHelp
       });
     }
     return binaryPath;
@@ -233,6 +285,58 @@ export class FallbackService {
 
   private async saveSettings(settings: { activeThemeId: string }): Promise<void> {
     await writeFile(this.paths.settingsFile, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  }
+
+  private async loadLibraryRecords(): Promise<Omit<LibraryEntry, "fileExists">[]> {
+    try {
+      const raw = await readFile(this.paths.libraryFile, "utf8");
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as Omit<LibraryEntry, "fileExists">[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private async saveLibraryRecords(records: Omit<LibraryEntry, "fileExists">[]): Promise<void> {
+    await writeFile(this.paths.libraryFile, `${JSON.stringify(records, null, 2)}\n`, "utf8");
+  }
+
+  private async listLibrary(): Promise<LibraryEntry[]> {
+    const records = await this.loadLibraryRecords();
+    const hydrated = await Promise.all(
+      records.map(async (record) => ({
+        ...record,
+        fileExists: await exists(record.outputPath)
+      }))
+    );
+
+    hydrated.sort((left, right) => right.downloadedAt.localeCompare(left.downloadedAt));
+    return hydrated;
+  }
+
+  private async recordCompletedDownload(
+    payload: DownloadRequest,
+    outputPath: string,
+    metadata?: DownloadMetadata | null
+  ): Promise<void> {
+    const records = await this.loadLibraryRecords();
+    const entry: Omit<LibraryEntry, "fileExists"> = {
+      id: payload.id,
+      title: metadata?.title?.trim() || path.parse(outputPath).name,
+      sourceUrl: payload.url,
+      webpageUrl: metadata?.webpageUrl ?? payload.url,
+      outputPath,
+      preset: payload.preset,
+      durationSeconds: metadata?.durationSeconds ?? null,
+      publishedAt: metadata?.publishedAt ?? null,
+      downloadedAt: new Date().toISOString(),
+      thumbnailUrl: metadata?.thumbnailUrl ?? null,
+      uploader: metadata?.uploader ?? null
+    };
+
+    const next = records.filter((record) => record.id !== payload.id && record.outputPath !== outputPath);
+    next.unshift(entry);
+    await this.saveLibraryRecords(next.slice(0, 500));
   }
 
   private async validateThemeDirectory(themeRoot: string): Promise<ThemeRecord["manifest"]> {
@@ -533,6 +637,7 @@ export class FallbackService {
           : typeof info.channel === "string"
             ? info.channel
             : null,
+      publishedAt: derivePublishedAt(info),
       formats: this.normalizeFormats(info.formats)
     };
   }
@@ -632,7 +737,8 @@ export class FallbackService {
     const record: DownloadRecord = {
       child,
       cancelled: false,
-      outputPath: null
+      outputPath: null,
+      lastError: null
     };
 
     this.downloads.set(payload.id, record);
@@ -685,6 +791,8 @@ export class FallbackService {
         return;
       }
 
+      record.lastError = message;
+
       this.onEvent({
         event: "download.progress",
         payload: {
@@ -706,7 +814,7 @@ export class FallbackService {
         event: "download.failed",
         payload: {
           id: payload.id,
-          error: classifyDownloadError(error.message)
+          error: classifyDownloadError(record.lastError ?? error.message)
         }
       });
     });
@@ -723,6 +831,10 @@ export class FallbackService {
       }
 
       if (code === 0) {
+        if (record.outputPath) {
+          void this.recordCompletedDownload(payload, record.outputPath, payload.metadata);
+        }
+
         this.onEvent({
           event: "download.completed",
           payload: {
@@ -738,7 +850,7 @@ export class FallbackService {
         event: "download.failed",
         payload: {
           id: payload.id,
-          error: classifyDownloadError(`yt-dlp exited with code ${code ?? "null"}.`)
+          error: classifyDownloadError(record.lastError ?? `yt-dlp exited with code ${code ?? "null"}.`)
         }
       });
     });

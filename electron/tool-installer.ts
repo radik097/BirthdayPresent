@@ -9,7 +9,7 @@ import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
 import type { SystemNoticePayload } from "../shared/contracts";
 import type { RuntimePaths } from "./app-paths";
-import { FFMPEG_SOURCE, SEVEN_ZR_SOURCE, YT_DLP_SOURCE, type RuntimeToolSource } from "./tool-sources";
+import { DENO_SOURCE, FFMPEG_SOURCE, SEVEN_ZR_SOURCE, YT_DLP_SOURCE, type RuntimeToolSource } from "./tool-sources";
 
 async function exists(targetPath: string): Promise<boolean> {
   try {
@@ -63,6 +63,12 @@ export class RuntimeToolInstaller {
       }
 
       await this.installFfmpegFromArchive(sevenZrTarget, ffmpegTarget);
+      changed = true;
+    }
+
+    const denoTarget = path.join(this.paths.libsDir, DENO_SOURCE.fileName);
+    if (!(await exists(denoTarget))) {
+      await this.installDenoFromScript(denoTarget);
       changed = true;
     }
 
@@ -155,6 +161,52 @@ export class RuntimeToolInstaller {
     }
   }
 
+  private async installDenoFromScript(targetPath: string): Promise<void> {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "dismas-deno-"));
+    const installRoot = path.join(tempDir, "deno-home");
+
+    this.emitNotice({
+      title: "Installing Deno runtime",
+      message: "Running the configured PowerShell installer and copying deno.exe into libs/.",
+      tone: "info",
+      steps: [DENO_SOURCE.installCommand ?? "", DENO_SOURCE.url].filter(Boolean)
+    });
+
+    try {
+      await mkdir(installRoot, { recursive: true });
+      await this.runPowerShellInstall(tempDir, installRoot);
+
+      const denoBinary = path.join(installRoot, "bin", DENO_SOURCE.fileName);
+      if (!(await exists(denoBinary))) {
+        throw new Error("The Deno install script completed, but deno.exe was not found in the expected install directory.");
+      }
+
+      await copyFile(denoBinary, targetPath);
+
+      this.emitNotice({
+        title: "Deno installed",
+        message: "deno.exe is now available in libs/ for YouTube-oriented runtime support.",
+        tone: "success",
+        refreshStatus: true
+      });
+    } catch (error) {
+      this.emitNotice({
+        title: "Deno installation failed",
+        message: error instanceof Error ? error.message : "Failed to install deno.exe with the configured PowerShell installer.",
+        tone: "danger",
+        steps: [
+          `Install command: ${DENO_SOURCE.installCommand}`,
+          `Source script: ${DENO_SOURCE.url}`,
+          `Manual fallback: place ${DENO_SOURCE.fileName} into ${this.paths.libsDir}`,
+          "Keep the source URL, version, and license notice with the binary."
+        ]
+      });
+      throw error;
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
   private async downloadToFile(url: string, targetPath: string): Promise<void> {
     const response = await fetch(url);
 
@@ -191,6 +243,45 @@ export class RuntimeToolInstaller {
         }
 
         reject(new Error(stderr.trim() || `7zr exited with code ${code ?? "null"}.`));
+      });
+    });
+  }
+
+  private async runPowerShellInstall(workingDir: string, installRoot: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", DENO_SOURCE.installCommand ?? ""],
+        {
+          cwd: workingDir,
+          env: {
+            ...process.env,
+            DENO_INSTALL: installRoot
+          },
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"]
+        }
+      );
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(stderr.trim() || stdout.trim() || `PowerShell exited with code ${code ?? "null"}.`));
       });
     });
   }

@@ -2,7 +2,7 @@ import { access } from "node:fs/promises";
 
 import type { SidecarMode, SystemComponentStatus, SystemStatus } from "../shared/contracts";
 import type { RuntimePaths } from "./app-paths";
-import { FFMPEG_SOURCE, SEVEN_ZR_SOURCE, YT_DLP_SOURCE } from "./tool-sources";
+import { DENO_SOURCE, FFMPEG_SOURCE, SEVEN_ZR_SOURCE, YT_DLP_SOURCE } from "./tool-sources";
 
 async function exists(targetPath: string): Promise<boolean> {
   try {
@@ -125,15 +125,16 @@ export async function collectSystemStatus(
     component(
       "deno",
       "Deno runtime",
-      hasDeno ? "ready" : "warning",
+      hasDeno ? "ready" : "missing",
       hasDeno ? "YouTube-oriented JS runtime support is available." : "Modern YouTube flows may fail until a JS runtime sidecar is present.",
       denoPath,
-      null,
-      false,
+      DENO_SOURCE.url,
+      true,
       ["YouTube support"],
       [
-        "Place `deno.exe` in `libs/` for current YouTube compatibility expectations.",
-        "Other providers may still work without it."
+        `Auto-install command: ${DENO_SOURCE.installCommand}`,
+        "Place `deno.exe` in `libs/` if you prefer to manage the binary manually.",
+        "Keep the source URL, version, and license notice with the binary."
       ]
     ),
     component(
@@ -194,7 +195,7 @@ export async function collectSystemStatus(
   }
 
   if (hasYtDlp && !hasDeno) {
-    notices.push("YouTube-specific flows may fail until `deno.exe` is added.");
+    notices.push("`deno.exe` is missing. The app can install it with `irm https://deno.land/install.ps1 | iex` and then place the binary into libs/.");
   }
 
   if (!hasRustSidecar && sidecarMode === "node-fallback") {

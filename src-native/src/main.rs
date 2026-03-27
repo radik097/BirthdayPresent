@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -67,6 +68,7 @@ struct RuntimePaths {
     libs_dir: PathBuf,
     data_dir: PathBuf,
     settings_file: PathBuf,
+    library_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +195,8 @@ struct AnalyzeResult {
     title: String,
     #[serde(rename = "durationSeconds")]
     duration_seconds: Option<f64>,
+    #[serde(rename = "publishedAt")]
+    published_at: Option<String>,
     #[serde(rename = "thumbnailUrl")]
     thumbnail_url: Option<String>,
     uploader: Option<String>,
@@ -227,6 +231,48 @@ struct DownloadRequest {
     preset: DownloadPreset,
     #[serde(default)]
     network: Option<NetworkSettings>,
+    #[serde(default)]
+    metadata: Option<DownloadMetadata>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct DownloadMetadata {
+    title: Option<String>,
+    #[serde(rename = "webpageUrl", default)]
+    webpage_url: Option<String>,
+    #[serde(rename = "durationSeconds", default)]
+    duration_seconds: Option<f64>,
+    #[serde(rename = "publishedAt", default)]
+    published_at: Option<String>,
+    #[serde(rename = "thumbnailUrl", default)]
+    thumbnail_url: Option<String>,
+    #[serde(default)]
+    uploader: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LibraryEntry {
+    id: String,
+    title: String,
+    #[serde(rename = "sourceUrl")]
+    source_url: String,
+    #[serde(rename = "webpageUrl", default)]
+    webpage_url: Option<String>,
+    #[serde(rename = "outputPath")]
+    output_path: String,
+    preset: DownloadPreset,
+    #[serde(rename = "durationSeconds", default)]
+    duration_seconds: Option<f64>,
+    #[serde(rename = "publishedAt", default)]
+    published_at: Option<String>,
+    #[serde(rename = "downloadedAt")]
+    downloaded_at: String,
+    #[serde(rename = "thumbnailUrl", default)]
+    thumbnail_url: Option<String>,
+    #[serde(default)]
+    uploader: Option<String>,
+    #[serde(rename = "fileExists", default)]
+    file_exists: bool,
 }
 
 #[derive(Debug)]
@@ -248,13 +294,23 @@ fn app_error(code: &'static str, message: impl Into<String>) -> AppError {
 }
 
 fn binary_missing_error(state: &AppState, file_name: &str) -> AppError {
+    let help = if file_name == "deno.exe" {
+        vec![
+            "Run `irm https://deno.land/install.ps1 | iex` and copy `deno.exe` into libs/.".to_string(),
+            "Place deno.exe into libs/.".to_string(),
+            "Keep the source URL, version, and license notice with the binary.".to_string(),
+        ]
+    } else {
+        vec![
+            format!("Place {} into libs/.", file_name),
+            "Keep the source URL, version, and license notice with the binary.".to_string(),
+        ]
+    };
+
     app_error("BINARY_MISSING", format!("Missing required binary: {}", file_name)).with_details(json!({
         "binary": file_name,
         "expectedPath": state.paths.libs_dir.join(file_name).display().to_string(),
-        "help": [
-            format!("Place {} into libs/.", file_name),
-            "Keep the source URL, version, and license notice with the binary."
-        ]
+        "help": help
     }))
 }
 
@@ -316,6 +372,7 @@ fn runtime_paths() -> Result<RuntimePaths> {
         libs_dir: app_root.join("libs"),
         data_dir: app_root.join("data"),
         settings_file: app_root.join("data").join("settings.json"),
+        library_file: app_root.join("data").join("library.json"),
         app_root,
     })
 }
@@ -330,6 +387,10 @@ fn ensure_layout(paths: &RuntimePaths) -> Result<()> {
             &paths.settings_file,
             format!("{}\n", serde_json::to_string_pretty(&AppSettings::default())?),
         )?;
+    }
+
+    if !paths.library_file.exists() {
+        fs::write(&paths.library_file, "[]\n")?;
     }
 
     Ok(())
@@ -349,6 +410,79 @@ fn persist_settings(state: &AppState, settings: &AppSettings) -> Result<()> {
     )?;
     *state.settings.lock().expect("settings lock poisoned") = settings.clone();
     Ok(())
+}
+
+fn load_library_records(state: &AppState) -> Vec<LibraryEntry> {
+    fs::read_to_string(&state.paths.library_file)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<LibraryEntry>>(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_library_records(state: &AppState, records: &[LibraryEntry]) -> Result<()> {
+    fs::write(
+        &state.paths.library_file,
+        format!("{}\n", serde_json::to_string_pretty(records)?),
+    )?;
+    Ok(())
+}
+
+fn list_library(state: &AppState) -> Vec<LibraryEntry> {
+    let mut records = load_library_records(state);
+
+    for record in &mut records {
+        record.file_exists = Path::new(&record.output_path).exists();
+    }
+
+    records.sort_by(|left, right| right.downloaded_at.cmp(&left.downloaded_at));
+    records
+}
+
+fn record_completed_download(
+    state: &AppState,
+    request: &DownloadRequest,
+    output_path: &str,
+) -> Result<()> {
+    let metadata = request.metadata.clone().unwrap_or(DownloadMetadata {
+        title: None,
+        webpage_url: None,
+        duration_seconds: None,
+        published_at: None,
+        thumbnail_url: None,
+        uploader: None,
+    });
+
+    let mut records = load_library_records(state);
+    records.retain(|record| record.id != request.id && record.output_path != output_path);
+    records.insert(
+        0,
+        LibraryEntry {
+            id: request.id.clone(),
+            title: metadata.title.unwrap_or_else(|| {
+                Path::new(output_path)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("Downloaded video")
+                    .to_string()
+            }),
+            source_url: request.url.clone(),
+            webpage_url: metadata.webpage_url.or_else(|| Some(request.url.clone())),
+            output_path: output_path.to_string(),
+            preset: request.preset.clone(),
+            duration_seconds: metadata.duration_seconds,
+            published_at: metadata.published_at,
+            downloaded_at: Utc::now().to_rfc3339(),
+            thumbnail_url: metadata.thumbnail_url,
+            uploader: metadata.uploader,
+            file_exists: Path::new(output_path).exists(),
+        },
+    );
+
+    if records.len() > 500 {
+        records.truncate(500);
+    }
+
+    save_library_records(state, &records)
 }
 
 fn require_valid_url(url: &str) -> Result<()> {
@@ -703,6 +837,28 @@ fn classify_yt_dlp_error(stderr: &str) -> AppError {
     let message = stderr.trim().to_string();
     let lowered = message.to_ascii_lowercase();
 
+    if lowered.contains("video unavailable")
+        || lowered.contains("private video")
+        || lowered.contains("this video is unavailable")
+    {
+        return app_error(
+            "DOWNLOAD_ERROR",
+            if message.is_empty() {
+                "The video is unavailable, private, or blocked for this session."
+            } else {
+                &message
+            },
+        )
+        .with_details(json!({
+            "category": "SOURCE",
+            "help": [
+                "Check whether the video opens in the browser.",
+                "If access is limited, try cookies from browser.",
+                "If the provider blocks your route, try another network path."
+            ]
+        }));
+    }
+
     if lowered.contains("not a bot") || lowered.contains("sign in to confirm") {
         return app_error("DOWNLOAD_ERROR", if message.is_empty() {
             "Server-side anti-bot challenge encountered."
@@ -729,6 +885,28 @@ fn classify_yt_dlp_error(stderr: &str) -> AppError {
             &message
         },
     )
+}
+
+fn derive_published_at(parsed: &Value) -> Option<String> {
+    if let Some(timestamp) = parsed.get("release_timestamp").and_then(Value::as_i64) {
+        return chrono::DateTime::<Utc>::from_timestamp(timestamp, 0).map(|value| value.to_rfc3339());
+    }
+
+    if let Some(timestamp) = parsed.get("timestamp").and_then(Value::as_i64) {
+        return chrono::DateTime::<Utc>::from_timestamp(timestamp, 0).map(|value| value.to_rfc3339());
+    }
+
+    if let Some(compact) = parsed.get("upload_date").and_then(Value::as_str) {
+        if compact.len() == 8 {
+            if let Ok(date) = NaiveDate::parse_from_str(compact, "%Y%m%d") {
+                return date
+                    .and_hms_opt(0, 0, 0)
+                    .map(|value| value.and_utc().to_rfc3339());
+            }
+        }
+    }
+
+    None
 }
 
 fn analyze_url(state: &AppState, request: AnalyzeRequest) -> Result<AnalyzeResult> {
@@ -803,6 +981,7 @@ fn analyze_url(state: &AppState, request: AnalyzeRequest) -> Result<AnalyzeResul
             .unwrap_or("Untitled")
             .to_string(),
         duration_seconds: parsed.get("duration").and_then(Value::as_f64),
+        published_at: derive_published_at(&parsed),
         thumbnail_url: parsed
             .get("thumbnail")
             .and_then(Value::as_str)
@@ -921,6 +1100,7 @@ fn start_download(state: &AppState, request: DownloadRequest) -> Result<Value> {
     let child = Arc::new(Mutex::new(child));
     let cancelled = Arc::new(AtomicBool::new(false));
     let output_path = Arc::new(Mutex::new(None::<String>));
+    let last_error = Arc::new(Mutex::new(None::<String>));
 
     state.downloads.lock().expect("downloads lock poisoned").insert(
         request.id.clone(),
@@ -975,12 +1155,14 @@ fn start_download(state: &AppState, request: DownloadRequest) -> Result<Value> {
     {
         let state = state.clone();
         let download_id = request.id.clone();
+        let last_error = Arc::clone(&last_error);
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(std::result::Result::ok) {
                 if line.trim().is_empty() {
                     continue;
                 }
+                *last_error.lock().expect("last error lock poisoned") = Some(line.clone());
                 emit_event(
                     &state,
                     "download.progress",
@@ -1005,6 +1187,7 @@ fn start_download(state: &AppState, request: DownloadRequest) -> Result<Value> {
         let child = Arc::clone(&child);
         let cancelled = Arc::clone(&cancelled);
         let output_path = Arc::clone(&output_path);
+        let last_error = Arc::clone(&last_error);
         thread::spawn(move || {
             let status = child
                 .lock()
@@ -1024,6 +1207,10 @@ fn start_download(state: &AppState, request: DownloadRequest) -> Result<Value> {
             }
 
             if status.as_ref().is_some_and(|status| status.success()) {
+                if let Some(saved_path) = output_path.lock().expect("output path lock poisoned").clone() {
+                    let _ = record_completed_download(&state, &request, &saved_path);
+                }
+
                 emit_event(
                     &state,
                     "download.completed",
@@ -1037,12 +1224,17 @@ fn start_download(state: &AppState, request: DownloadRequest) -> Result<Value> {
             }
 
             let code = status.and_then(|status| status.code());
+            let failure_text = last_error
+                .lock()
+                .expect("last error lock poisoned")
+                .clone()
+                .unwrap_or_else(|| format!("yt-dlp exited with code {}", code.unwrap_or(-1)));
             emit_event(
                 &state,
                 "download.failed",
                 json!({
                     "id": request.id,
-                    "error": classify_yt_dlp_error(&format!("yt-dlp exited with code {}", code.unwrap_or(-1)))
+                    "error": classify_yt_dlp_error(&failure_text)
                 }),
             );
         });
@@ -1106,6 +1298,7 @@ fn dispatch_request(state: &AppState, request: RequestEnvelope) -> Result<Value,
             let record = create_theme(state, create_request).map_err(|error| app_error("THEME_ERROR", error.to_string()))?;
             serde_json::to_value(record).map_err(|error| app_error("UNKNOWN", error.to_string()))
         }
+        "library.list" => serde_json::to_value(list_library(state)).map_err(|error| app_error("UNKNOWN", error.to_string())),
         "download.analyze" => {
             let analyze_request: AnalyzeRequest =
                 serde_json::from_value(request.params).map_err(|error| app_error("VALIDATION_ERROR", error.to_string()))?;

@@ -60,6 +60,30 @@ function appError(code, message, details) {
   };
 }
 
+function parseCompactDate(value) {
+  if (!value || !/^\d{8}$/.test(value)) {
+    return null;
+  }
+
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T00:00:00.000Z`;
+}
+
+function derivePublishedAt(info) {
+  if (typeof info.release_timestamp === "number") {
+    return new Date(info.release_timestamp * 1000).toISOString();
+  }
+
+  if (typeof info.timestamp === "number") {
+    return new Date(info.timestamp * 1000).toISOString();
+  }
+
+  if (typeof info.upload_date === "string") {
+    return parseCompactDate(info.upload_date);
+  }
+
+  return null;
+}
+
 async function exists(targetPath) {
   try {
     await access(targetPath);
@@ -109,6 +133,10 @@ async function ensureLayout() {
   if (!(await exists(paths.settingsFile))) {
     await writeFile(paths.settingsFile, `${JSON.stringify(defaultSettings, null, 2)}\n`, "utf8");
   }
+
+  if (!(await exists(path.join(paths.dataDir, "library.json")))) {
+    await writeFile(path.join(paths.dataDir, "library.json"), "[]\n", "utf8");
+  }
 }
 
 async function loadSettings() {
@@ -125,6 +153,58 @@ async function loadSettings() {
 
 async function saveSettings(settings) {
   await writeFile(paths.settingsFile, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
+async function loadLibraryRecords() {
+  const libraryFile = path.join(paths.dataDir, "library.json");
+
+  try {
+    const raw = await readFile(libraryFile, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveLibraryRecords(records) {
+  const libraryFile = path.join(paths.dataDir, "library.json");
+  await writeFile(libraryFile, `${JSON.stringify(records, null, 2)}\n`, "utf8");
+}
+
+async function listLibrary() {
+  const records = await loadLibraryRecords();
+  const hydrated = await Promise.all(
+    records.map(async (record) => ({
+      ...record,
+      fileExists: await exists(record.outputPath)
+    }))
+  );
+
+  hydrated.sort((left, right) => right.downloadedAt.localeCompare(left.downloadedAt));
+  return hydrated;
+}
+
+async function recordCompletedDownload(payload, outputPath) {
+  const records = await loadLibraryRecords();
+  const metadata = payload.metadata ?? {};
+  const entry = {
+    id: payload.id,
+    title: metadata.title?.trim() || path.parse(outputPath).name,
+    sourceUrl: payload.url,
+    webpageUrl: metadata.webpageUrl ?? payload.url,
+    outputPath,
+    preset: payload.preset,
+    durationSeconds: metadata.durationSeconds ?? null,
+    publishedAt: metadata.publishedAt ?? null,
+    downloadedAt: new Date().toISOString(),
+    thumbnailUrl: metadata.thumbnailUrl ?? null,
+    uploader: metadata.uploader ?? null
+  };
+
+  const next = records.filter((record) => record.id !== payload.id && record.outputPath !== outputPath);
+  next.unshift(entry);
+  await saveLibraryRecords(next.slice(0, 500));
 }
 
 async function validateThemeDirectory(themeRoot) {
@@ -336,13 +416,22 @@ function buildToolEnv() {
 async function requireBinary(fileName) {
   const binaryPath = path.join(paths.libsDir, fileName);
   if (!(await exists(binaryPath))) {
+    const help =
+      fileName === "deno.exe"
+        ? [
+            "Run `irm https://deno.land/install.ps1 | iex` and copy `deno.exe` into libs/.",
+            "Place deno.exe into libs/.",
+            "Keep the source URL, version, and license notice with the binary."
+          ]
+        : [
+            `Place ${fileName} into libs/.`,
+            "Keep the binary source URL, version, and license notice with the portable build."
+          ];
+
     throw appError("BINARY_MISSING", `Missing required binary: ${fileName}`, {
       binary: fileName,
       expectedPath: binaryPath,
-      help: [
-        `Place ${fileName} into libs/.`,
-        "Keep the binary source URL, version, and license notice with the portable build."
-      ]
+      help
     });
   }
   return binaryPath;
@@ -385,6 +474,17 @@ function buildNetworkArgs(network) {
 function classifyYtDlpError(stderr) {
   const text = stderr.trim();
   const lower = text.toLowerCase();
+
+  if (lower.includes("video unavailable") || lower.includes("private video") || lower.includes("this video is unavailable")) {
+    return appError("DOWNLOAD_ERROR", text || "The video is unavailable, private, or blocked for this session.", {
+      category: "SOURCE",
+      help: [
+        "Check whether the video opens in the browser.",
+        "If access is limited, try cookies from browser.",
+        "If the provider blocks your route, try another network path."
+      ]
+    });
+  }
 
   if (lower.includes("not a bot") || lower.includes("sign in to confirm")) {
     return appError("DOWNLOAD_ERROR", text || "Server-side anti-bot challenge encountered.", {
@@ -467,6 +567,7 @@ async function analyze(payload) {
     extractor: info.extractor_key ?? info.extractor ?? null,
     title: info.title ?? "Untitled",
     durationSeconds: typeof info.duration === "number" ? info.duration : null,
+    publishedAt: derivePublishedAt(info),
     thumbnailUrl: info.thumbnail ?? null,
     uploader: info.uploader ?? info.channel ?? null,
     formats: normalizeFormats(info.formats)
@@ -565,7 +666,8 @@ async function startDownload(payload) {
   const record = {
     child,
     cancelled: false,
-    outputPath: null
+    outputPath: null,
+    lastError: null
   };
 
   activeDownloads.set(payload.id, record);
@@ -612,6 +714,8 @@ async function startDownload(payload) {
       return;
     }
 
+    record.lastError = message;
+
     emit("download.progress", {
       id: payload.id,
       percent: null,
@@ -628,7 +732,7 @@ async function startDownload(payload) {
     activeDownloads.delete(payload.id);
     emit("download.failed", {
       id: payload.id,
-      error: classifyYtDlpError(error.message)
+      error: classifyYtDlpError(record.lastError ?? error.message)
     });
   });
 
@@ -641,6 +745,10 @@ async function startDownload(payload) {
     }
 
     if (code === 0) {
+      if (record.outputPath) {
+        void recordCompletedDownload(payload, record.outputPath);
+      }
+
       emit("download.completed", {
         id: payload.id,
         outputPath: record.outputPath,
@@ -651,7 +759,7 @@ async function startDownload(payload) {
 
     emit("download.failed", {
       id: payload.id,
-      error: classifyYtDlpError(`yt-dlp exited with code ${code ?? "null"}.`)
+      error: classifyYtDlpError(record.lastError ?? `yt-dlp exited with code ${code ?? "null"}.`)
     });
   });
 
@@ -695,6 +803,8 @@ async function handleRequest(request) {
       return startDownload(request.params ?? {});
     case "download.cancel":
       return cancelDownload(String(request.params?.id ?? "").trim());
+    case "library.list":
+      return listLibrary();
     default:
       throw appError("UNKNOWN", `Unknown sidecar method: ${request.method}`);
   }

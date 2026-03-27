@@ -15,6 +15,7 @@ export interface RuntimePaths {
   dataDir: string;
   logsDir: string;
   settingsFile: string;
+  libraryFile: string;
   downloadsDbFile: string;
   rendererIndexHtml: string;
 }
@@ -29,6 +30,7 @@ export function getRuntimePaths(): RuntimePaths {
     dataDir: path.join(appRoot, "data"),
     logsDir: path.join(appRoot, "data", "logs"),
     settingsFile: path.join(appRoot, "data", "settings.json"),
+    libraryFile: path.join(appRoot, "data", "library.json"),
     downloadsDbFile: path.join(appRoot, "data", "downloads.db"),
     rendererIndexHtml: path.join(__dirname, "..", "dist", "index.html")
   };
@@ -45,6 +47,12 @@ export async function ensurePortableLayout(paths: RuntimePaths): Promise<void> {
   } catch {
     await writeFile(paths.settingsFile, `${JSON.stringify(DEFAULT_SETTINGS, null, 2)}\n`, "utf8");
   }
+
+  try {
+    await access(paths.libraryFile);
+  } catch {
+    await writeFile(paths.libraryFile, "[]\n", "utf8");
+  }
 }
 
 export async function readSettings(paths: RuntimePaths): Promise<AppSettings> {
@@ -59,4 +67,3 @@ export async function readSettings(paths: RuntimePaths): Promise<AppSettings> {
     return DEFAULT_SETTINGS;
   }
 }
-
