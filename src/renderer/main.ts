@@ -11,9 +11,10 @@ import type {
   ThemeEventEnvelope,
   ThemeSummary
 } from "../../shared/contracts";
+import { birthdayCardConfig, resolveBirthdayCardConfig } from "./birthday-config";
 import { applyThemeStyles } from "./theme";
 
-type ViewName = "downloader" | "queue" | "themes";
+type ViewName = "downloader" | "queue" | "themes" | "birthday";
 type LogTone = "info" | "success" | "warning" | "danger";
 
 interface TaskSnapshot {
@@ -267,6 +268,8 @@ function renderShell(): void {
     throw new Error("Missing #app root.");
   }
 
+  const birthdayCard = resolveBirthdayCardConfig(birthdayCardConfig);
+
   app.innerHTML = `
     <div class="shell">
       <aside class="sidebar">
@@ -280,6 +283,7 @@ function renderShell(): void {
           <button class="nav-button is-active" data-view="downloader">Downloader</button>
           <button class="nav-button" data-view="queue">Queue</button>
           <button class="nav-button" data-view="themes">Themes</button>
+          <button class="nav-button" data-view="birthday">Birthday</button>
         </nav>
 
         <section class="sidebar-card legal-card">
@@ -481,6 +485,28 @@ function renderShell(): void {
               </form>
             </div>
           </div>
+        </section>
+
+        <section class="view" data-panel="birthday">
+          <article class="panel birthday-panel">
+            <p class="eyebrow">Ancestor Dispatch</p>
+            <h3 class="birthday-title">${escapeHtml(`${birthdayCard.greetingTitle}, ${birthdayCard.recipientName}!`)}</h3>
+            <p class="birthday-subtitle">${escapeHtml(birthdayCard.subheading)}</p>
+            <p class="birthday-copy">${escapeHtml(birthdayCard.shortMessage)}</p>
+            <dl class="birthday-meta">
+              <div>
+                <dt>Date</dt>
+                <dd>${escapeHtml(birthdayCard.dateLabel)}</dd>
+              </div>
+              <div>
+                <dt>Recipient</dt>
+                <dd>${escapeHtml(birthdayCard.recipientName)}</dd>
+              </div>
+            </dl>
+            <button id="birthday-cta" class="accent-button birthday-cta" type="button" data-href="${escapeHtml(birthdayCard.ctaHref)}">
+              ${escapeHtml(birthdayCard.ctaLabel)}
+            </button>
+          </article>
         </section>
       </main>
     </div>
@@ -841,6 +867,22 @@ function bindNavigation(): void {
   });
 }
 
+function bindBirthdayCard(): void {
+  const button = document.querySelector<HTMLButtonElement>("#birthday-cta");
+  if (!button) {
+    return;
+  }
+
+  button.addEventListener("click", () => {
+    const href = button.dataset.href ?? "#";
+    appendLog("Birthday blessing acknowledged. Forward, always forward.", "success");
+
+    if (href !== "#") {
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+  });
+}
+
 function bindAnalyzeForm(): void {
   const form = document.querySelector<HTMLFormElement>("#analyze-form");
   if (!form) {
@@ -1110,6 +1152,7 @@ async function refreshSystemStatus(pushRecoveredNotice = true): Promise<void> {
 async function bootstrap(): Promise<void> {
   renderShell();
   bindNavigation();
+  bindBirthdayCard();
   bindAnalyzeForm();
   bindDownloadForm();
   bindThemeForms();
